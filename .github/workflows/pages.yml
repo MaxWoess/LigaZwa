@@ -1,0 +1,59 @@
+name: Deploy & News
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/30 * * * *' # News alle 30 Minuten aktualisieren
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - id: day
+        run: echo "d=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      # Teamliste nur 1x täglich von der API holen (spart Kontingent)
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: teams-${{ steps.day.outputs.d }}
+          restore-keys: teams-
+
+      # Bisherige News übernehmen, damit nichts verloren geht
+      - name: Vorherige News laden
+        run: curl -sfL "${{ steps.pages.outputs.base_url }}/data/news.json" -o site/data/news.json || true
+
+      - name: News sammeln
+        run: node scripts/fetch-news.mjs
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

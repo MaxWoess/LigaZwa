@@ -1,0 +1,11 @@
+{
+  "_info": "News-Quellen. type=search: Google-News-Suche (alles wird übernommen). type=rss: beliebiger RSS/Atom-Feed; mit filter=true werden nur Meldungen mit Bezug zur 2. Liga oder zu einem Liga-Team übernommen.",
+  "feeds": [
+    { "type": "search", "q": "\"2. Liga\" Fußball Österreich" },
+    { "type": "search", "q": "\"ADMIRAL 2. Liga\"" },
+    { "type": "search", "q": "\"zweite Liga\" Fußball Österreich" },
+    { "type": "rss", "name": "ORF Sport", "url": "https://rss.orf.at/sport.xml", "filter": true }
+  ],
+  "perTeamSearch": true,
+  "keywords": ["2. Liga", "zweite Liga", "zweiten Liga", "Admiral 2. Liga"]
+}
