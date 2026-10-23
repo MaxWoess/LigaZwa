@@ -1,6 +1,6 @@
 // Network-first: immer aktuelle Version laden, offline auf den Cache zurückfallen.
 // API-Anfragen (anderer Origin) werden nicht angefasst.
-const CACHE = 'ligazwa-v1';
+const CACHE = 'ligazwa-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {

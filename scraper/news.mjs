@@ -1,18 +1,16 @@
-// Sammelt News aus RSS-Feeds und schreibt site/data/news.json.
-// Läuft in der GitHub Action (kein CORS-Problem, keine Abhängigkeiten).
-// Optional: API_FOOTBALL_KEY → Teamliste holen (max. 1x täglich, gecacht in .cache/teams.json)
-// für zusätzliche Team-Suchen und den Filter auf allgemeine Feeds.
+// Sammelt News (2liga.at + RSS-Feeds) und schreibt site/data/news.json.
+// Läuft in der GitHub Action nach scraper/build.mjs (nutzt dessen Tabelle für die Teamnamen).
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { fetchHtml, parseNews } from '../scraper/lib.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const OUT = ROOT + 'site/data/news.json';
-const TEAMS_CACHE = ROOT + '.cache/teams.json';
 const MAX_AGE_DAYS = 21;
 const MAX_ITEMS = 400;
 
-const cfg = JSON.parse(await readFile(ROOT + 'scripts/feeds.json', 'utf8'));
+const cfg = JSON.parse(await readFile(ROOT + 'scraper/feeds.json', 'utf8'));
 
 const gnews = (q) => `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=de&gl=AT&ceid=AT:de`;
 
@@ -62,29 +60,9 @@ function parseFeed(xml, fallbackSource) {
 
 async function loadTeams() {
   try {
-    const c = JSON.parse(await readFile(TEAMS_CACHE, 'utf8'));
-    if (Date.now() - c.t < 86400e3) return c.teams;
-  } catch { /* kein Cache */ }
-  const key = process.env.API_FOOTBALL_KEY;
-  if (!key) return [];
-  const api = async (path) => {
-    const r = await fetch('https://v3.football.api-sports.io' + path, { headers: { 'x-apisports-key': key } });
-    const j = await r.json();
-    const errs = Object.values(j.errors || {});
-    if (errs.length) throw new Error(errs.join(' '));
-    return j.response;
-  };
-  try {
-    const leagues = await api('/leagues?country=Austria&type=league');
-    const l = leagues.find((x) => /^2\.\s*liga$/i.test(x.league.name)) || leagues.find((x) => /2\.\s*liga/i.test(x.league.name));
-    const season = (l.seasons.find((s) => s.current) || l.seasons.at(-1)).year;
-    const teams = (await api(`/teams?league=${l.league.id}&season=${season}`)).map((t) => t.team.name);
-    await mkdir(dirname(TEAMS_CACHE), { recursive: true });
-    await writeFile(TEAMS_CACHE, JSON.stringify({ t: Date.now(), teams }));
-    console.log(`Teams (${teams.length}): ${teams.join(', ')}`);
-    return teams;
-  } catch (e) {
-    console.warn('Teamliste nicht verfügbar:', e.message);
+    const st = JSON.parse(await readFile(ROOT + 'site/data/standings.json', 'utf8'));
+    return st.tables.gesamt.map((r) => r.team.name);
+  } catch {
     return [];
   }
 }
@@ -100,6 +78,13 @@ const jobs = cfg.feeds.map((f) => ({ ...f, url: f.type === 'search' ? gnews(f.q)
 if (cfg.perTeamSearch) for (const t of teams) jobs.push({ type: 'search', url: gnews(`"${t}" Fußball`) });
 
 let all = [];
+try {
+  const official = [...parseNews(await fetchHtml('/de/news')), ...parseNews(await fetchHtml('/de'))];
+  console.log(`${official.length.toString().padStart(4)}  2liga.at`);
+  all.push(...official);
+} catch (e) {
+  console.warn('FEHLER 2liga.at:', e.message);
+}
 await Promise.all(jobs.map(async (j) => {
   try {
     let items = parseFeed(await getText(j.url), j.name ?? null);

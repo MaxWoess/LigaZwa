@@ -1,45 +1,49 @@
 # LigaZwa – 2. Liga Österreich
 
-Private Web-App (PWA) für die ADMIRAL 2. Liga: **Tabelle, Spielplan, Live-Ticker, News** (filterbar nach Teams).
-Läuft komplett auf GitHub Pages, ohne eigenen Server.
+Private Web-App (PWA) für die ADMIRAL 2. Liga: **Tabelle (gesamt/heim/auswärts), Spielplan, Live-Ticker, News** (filterbar nach Teams).
+Alle Daten kommen von **www.2liga.at**, die App läuft auf GitHub Pages.
 
 ## Funktionsweise
 
 | Bereich | Quelle | Aktualisierung |
 |---|---|---|
-| Tabelle, Spielplan | [API-Football](https://www.api-football.com) direkt aus dem Browser | Cache 2 h / 6 h, nach jedem Spielende sofort |
-| Live-Ticker | API-Football (`fixtures?ids=…` inkl. Tore, Karten, Wechsel) | alle 30 s (einstellbar), nur während Spiele laufen |
-| News | RSS (Google News, ORF Sport) → GitHub Action → `data/news.json` | alle 30 Min. |
+| Tabelle, Spielplan, Spielberichte | 2liga.at → GitHub Action → `data/*.json` | alle 15 Min. |
+| News | 2liga.at + Google News + ORF Sport → GitHub Action | alle 15 Min. |
+| Live-Ticker | **mit Live-Server:** Cloudflare Worker liest das 2liga.at-Matchcenter | alle 30 s (einstellbar) |
+| | ohne Live-Server: Daten der GitHub Action | ca. alle 15 Min. |
 
-- Der **API-Key liegt nur im Browser** (localStorage), nie im Repository.
-- Der Ticker pollt nur ab 3 Min. vor Anpfiff bis Spielende und nur, solange die App offen ist.
-- **Kontingent-Schutz:** Reicht das Tageskontingent nicht für das eingestellte Intervall bis zum letzten Spiel des Tages, wird das Intervall automatisch verlängert (Anzeige im Live-Tab).
-- Ohne Key läuft die App im **Demo-Modus** mit erfundenen Daten.
+Der Browser darf 2liga.at nicht direkt abfragen (CORS). Deshalb gibt es für den Echtzeit-Ticker
+einen kleinen, kostenlosen Cloudflare Worker (`worker/`), der die Seite ausliest und als JSON liefert
+(mit 20 s Cache, damit 2liga.at geschont wird).
 
 ## Einrichtung
 
-1. Branch nach `main` mergen.
-2. **Settings → Pages → Build and deployment → Source: „GitHub Actions“.**
-3. Optional, aber empfohlen: **Settings → Secrets and variables → Actions → New repository secret**
-   `API_FOOTBALL_KEY` = dein Key. Damit holt die News-Action 1× täglich die Teamliste und sucht zusätzlich gezielt nach News jedes Teams (2 Anfragen/Tag).
-4. Workflow „Deploy & News“ läuft automatisch (oder unter *Actions* manuell starten).
-5. App öffnen → ⚙ → API-Key eintragen, „Mein Team“ wählen.
-   Am Handy: „Zum Startbildschirm hinzufügen“ → läuft wie eine App.
+1. **Settings → Pages → Source: „GitHub Actions“** (einmalig).
+2. Workflow **Actions → „Deploy & Daten“ → Run workflow** (läuft danach automatisch alle 15 Min.).
+3. App öffnen: https://maxwoess.github.io/LigaZwa/ → ⚙ → „Mein Team“ wählen.
+   Am Handy: „Zum Startbildschirm hinzufügen“.
 
-## Wichtig: Kontingent von API-Football
+### Live-Server (für den 30-Sekunden-Ticker)
 
-Der Gratis-Plan hat **100 Anfragen/Tag** (pro Key, alle Geräte zusammen). Ein Spieltag mit ~2,5 h Live-Zeit
-braucht bei 30 s ≈ 300 Anfragen. Mit dem Gratis-Plan wird der Ticker daher auf ca. 90–120 s gedrosselt.
-Für echte 30 s braucht es einen bezahlten Plan (z. B. „Pro“, 7.500 Anfragen/Tag).
-Außerdem schränkt der Gratis-Plan teils die verfügbaren Saisonen ein – die App zeigt die Fehlermeldung der API dann oben an.
+1. Kostenloses Konto auf https://dash.cloudflare.com/sign-up anlegen.
+   Danach einmal links **„Workers & Pages“** öffnen, damit eine `*.workers.dev`-Adresse angelegt wird.
+2. **Account-ID** kopieren (steht auf der „Workers & Pages“-Seite rechts).
+3. **API-Token** erstellen: Profil-Symbol → *My Profile* → *API Tokens* → *Create Token* →
+   Vorlage **„Edit Cloudflare Workers“** → *Continue to summary* → *Create Token* → kopieren.
+4. Im GitHub-Repo: **Settings → Secrets and variables → Actions → New repository secret**
+   - `CLOUDFLARE_API_TOKEN` = Token
+   - `CLOUDFLARE_ACCOUNT_ID` = Account-ID
+5. Workflow einmal manuell starten. Er deployt den Worker und trägt dessen Adresse automatisch in die App ein.
 
 ## Anpassen
 
-- News-Quellen: `scripts/feeds.json`
-- Alias-Namen für den News-Filter, Intervalle, Cache-Zeiten: `site/js/config.js`
-- Lokal testen: `cd site && python3 -m http.server` → http://localhost:8000
+- News-Quellen: `scraper/feeds.json`
+- Alias-Namen für den News-Filter, Intervalle: `site/js/config.js`
+- Parser für 2liga.at: `scraper/lib.mjs` (falls sich die Seite ändert, hier anpassen)
+- Alle Runden neu laden: Workflow manuell mit „Alle Runden neu laden“ starten
 
 ## Hinweise
 
+- Inoffizielle, private App. Daten, Logos und Texte gehören der Österreichischen Fußball-Bundesliga;
+  News-Links führen zur Originalquelle. Abfragen sind bewusst sparsam (15-Min.-Intervall, Worker-Cache).
 - Geplante Workflows in öffentlichen Repos pausiert GitHub nach 60 Tagen ohne Repo-Aktivität – dann unter *Actions* wieder aktivieren.
-- Logos und Daten stammen von API-Football, News-Links führen zur Originalquelle. Nur für private Nutzung gedacht.

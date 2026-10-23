@@ -1,25 +1,28 @@
 import { CONFIG } from './config.js';
 import { $, $$, esc, store, fmtDay, fmtTime, fmtLongDate, dayKey, timeAgo, countdown, norm } from './util.js';
-import { apiProvider, getQuota } from './api.js';
-import { demoProvider, demoNews } from './demo.js';
 
 const FINAL = new Set(['FT', 'AET', 'PEN', 'PST', 'CANC', 'ABD', 'AWD', 'WO']);
 const IN_PLAY = new Set(['1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE']);
 const ROUTES = ['tabelle', 'spielplan', 'live', 'news'];
+const TABLES = { gesamt: 'Gesamt', heim: 'Heim', auswaerts: 'Auswärts' };
 
 const S = {
-  provider: null,
-  league: null,
+  config: {},
+  season: null,
+  tables: { gesamt: [], heim: [], auswaerts: [] },
   standings: [],
   fixtures: [],
   byId: new Map(),
   events: new Map(),
+  stats: new Map(),
   news: null,
+  updated: null,
   error: null,
   loading: true,
   live: { lastPoll: 0, polling: false, error: null, interval: null, seen: new Set() },
   ui: {
     round: null,
+    table: store.get('tableView', 'gesamt'),
     team: store.get('fixtureTeam', ''),
     newsTeams: store.get('newsTeams', []),
   },
@@ -34,6 +37,18 @@ const isLive = (f) => IN_PLAY.has(st(f));
 const favId = () => store.get('favorite', null);
 const roundNo = (r) => Number(String(r).match(/(\d+)\s*$/)?.[1] ?? 0);
 const roundLabel = (r) => (roundNo(r) ? `${roundNo(r)}. Runde` : r);
+const liveUrl = () => (store.get('liveUrl', '') || S.config.liveUrl || '').replace(/\/+$/, '');
+const seasonLabel = () => {
+  const m = S.season?.match(/(\d{4})-(\d{4})/);
+  return m ? `${m[1]}/${m[2].slice(-2)}` : '';
+};
+const reportUrl = (f) => `https://www.2liga.at/de/spielbericht/${f.fixture.season}/${f.fixture.id}/matchcenter`;
+
+async function getJson(url) {
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  return res.json();
+}
 
 function teams() {
   if (S.standings.length) return S.standings.map((r) => r.team).sort((a, b) => a.name.localeCompare(b.name, 'de'));
@@ -48,7 +63,7 @@ function statusBadge(f) {
   const s = st(f);
   const e = f.fixture.status.elapsed;
   if (s === 'HT') return '<span class="badge live">Pause</span>';
-  if (IN_PLAY.has(s)) return `<span class="badge live">${e ?? ''}${e ? "'" : 'Live'}${f.fixture.status.extra ? '+' + f.fixture.status.extra : ''}</span>`;
+  if (IN_PLAY.has(s)) return `<span class="badge live">${e ? `${e}'` : 'Live'}</span>`;
   if (s === 'PST') return '<span class="badge">verschoben</span>';
   if (s === 'CANC' || s === 'ABD') return '<span class="badge">abgesagt</span>';
   return '';
@@ -67,7 +82,7 @@ function matchRow(f, { showDate = true } = {}) {
   const h = f.teams.home, a = f.teams.away;
   const cls = (t) => ['team', t.id === fav ? 'fav' : '', t.winner === true ? 'win' : ''].join(' ');
   return `<button class="match" data-fixture="${f.fixture.id}">
-    <span class="meta">${showDate ? fmtDay(ko(f)) : ''}${statusBadge(f)}</span>
+    <span class="meta">${showDate && f.fixture.timestamp ? fmtDay(ko(f)) : ''}${statusBadge(f)}</span>
     <span class="${cls(h)} home"><span class="name">${esc(h.name)}</span>${logo(h)}</span>
     ${scoreCell(f)}
     <span class="${cls(a)} away">${logo(a)}<span class="name">${esc(a.name)}</span></span>
@@ -75,13 +90,23 @@ function matchRow(f, { showDate = true } = {}) {
 }
 
 function setFixtures(list) {
-  S.fixtures = [...list].sort((x, y) => ko(x) - ko(y));
+  S.fixtures = list.filter((f) => f.fixture.timestamp).sort((x, y) => ko(x) - ko(y))
+    .concat(list.filter((f) => !f.fixture.timestamp));
   S.byId = new Map(S.fixtures.map((f) => [f.fixture.id, f]));
+  S.season = S.fixtures.find((f) => f.fixture.season)?.fixture.season ?? S.season;
 }
 
 function mergeFixture(f) {
-  const { events, ...rest } = f;
+  const { events, statistics, ...rest } = f;
   if (events) S.events.set(f.fixture.id, events);
+  if (statistics?.length) S.stats.set(f.fixture.id, statistics);
+  const old = S.byId.get(f.fixture.id);
+  // Spielbericht-Daten haben keine Teamkürzel – vom Spielplan übernehmen
+  if (old) {
+    rest.teams = { home: { ...old.teams.home, ...rest.teams.home }, away: { ...old.teams.away, ...rest.teams.away } };
+    rest.fixture = { ...rest.fixture, timestamp: rest.fixture.timestamp ?? old.fixture.timestamp };
+    rest.league = old.league;
+  }
   const i = S.fixtures.findIndex((x) => x.fixture.id === f.fixture.id);
   if (i >= 0) S.fixtures[i] = rest; else S.fixtures.push(rest);
   S.byId.set(f.fixture.id, rest);
@@ -97,37 +122,27 @@ function toast(msg) {
 
 // ---------- Daten laden ----------
 
-function pickProvider() {
-  const key = store.get('apiKey', '');
-  S.provider = !key || store.get('demo', false) ? demoProvider : apiProvider;
-}
-
-// /status kostet kein Kontingent und liefert den echten Stand, auch wenn der Browser
-// die Rate-Limit-Header (CORS) nicht lesen darf.
-let lastStatus = 0;
-function syncQuota() {
-  if (S.provider === demoProvider || Date.now() - lastStatus < 10 * 60e3) return;
-  lastStatus = Date.now();
-  S.provider.getStatus().catch(() => {});
-}
-
-async function loadAll(force = false, forceLeague = false) {
-  syncQuota();
+async function loadAll() {
   S.loading = true;
   S.error = null;
   render();
-  try {
-    S.league = await S.provider.getLeague(forceLeague);
-    const [stR, fxR] = await Promise.allSettled([
-      S.provider.getStandings(S.league, force),
-      S.provider.getFixtures(S.league, force),
-    ]);
-    if (stR.status === 'fulfilled') S.standings = stR.value.rows; else S.error = stR.reason.message;
-    if (fxR.status === 'fulfilled') setFixtures(fxR.value.list); else S.error = fxR.reason.message;
-    const stale = stR.value?.__stale || fxR.value?.__stale;
-    if (stale && !S.error) S.error = `Zeige zwischengespeicherte Daten (${stale})`;
-  } catch (e) {
-    S.error = e.message;
+  const [stR, fxR, mtR, cfR] = await Promise.allSettled([
+    getJson('data/standings.json'), getJson('data/fixtures.json'), getJson('data/matches.json'), getJson('data/config.json'),
+  ]);
+  if (cfR.status === 'fulfilled') S.config = cfR.value || {};
+  if (stR.status === 'fulfilled') {
+    S.tables = stR.value.tables;
+    S.standings = S.tables.gesamt;
+  }
+  if (fxR.status === 'fulfilled') {
+    setFixtures(fxR.value.list);
+    S.updated = fxR.value.updated;
+  }
+  if (mtR.status === 'fulfilled') {
+    for (const m of Object.values(mtR.value)) mergeFixture(m);
+  }
+  if (stR.status === 'rejected' || fxR.status === 'rejected') {
+    S.error = 'Noch keine Daten vorhanden. Der GitHub-Workflow „Deploy & Daten“ muss einmal gelaufen sein.';
   }
   S.loading = false;
   render();
@@ -136,59 +151,40 @@ async function loadAll(force = false, forceLeague = false) {
 
 async function refreshStandings() {
   try {
-    const r = await S.provider.getStandings(S.league, true);
-    S.standings = r.rows;
+    if (liveUrl()) {
+      const r = await getJson(`${liveUrl()}/standings`);
+      if (r.rows?.length) { S.tables.gesamt = r.rows; S.standings = r.rows; }
+    } else {
+      const r = await getJson('data/standings.json');
+      S.tables = r.tables;
+      S.standings = r.tables.gesamt;
+    }
     render();
   } catch { /* nächster Versuch beim nächsten Spielende */ }
 }
 
 async function loadNews() {
   try {
-    const res = await fetch(CONFIG.newsUrl, { cache: 'no-store' });
-    if (!res.ok) throw new Error();
-    S.news = await res.json();
+    S.news = await getJson(CONFIG.newsUrl);
   } catch {
     S.news = { updated: null, items: [] };
   }
-  if (!S.news.items?.length && S.provider === demoProvider) S.news = demoNews();
   if (route() === 'news') render();
 }
 
 // ---------- Live-Ticker ----------
 
 function liveCandidates(now = Date.now()) {
-  return S.fixtures.filter((f) => !isFinal(f)
+  return S.fixtures.filter((f) => f.fixture.timestamp && !isFinal(f)
     && now >= ko(f) - CONFIG.liveBeforeKickoff
     && now <= ko(f) + CONFIG.liveMaxWindow);
 }
 
-// Wie viele Millisekunden Live-Zeit liegen heute noch vor uns (Vereinigung aller Spielfenster)?
-function remainingLiveMs(now) {
-  const horizon = now + 18 * 3600e3;
-  const wins = S.fixtures.filter((f) => !isFinal(f))
-    .map((f) => [Math.max(now, ko(f) - CONFIG.liveBeforeKickoff), ko(f) + CONFIG.matchDuration])
-    .filter(([a, b]) => b > a && a < horizon)
-    .sort((x, y) => x[0] - y[0]);
-  let total = 0, end = -Infinity;
-  for (const [a, b] of wins) {
-    if (b <= end) continue;
-    total += b - Math.max(a, end);
-    end = b;
-  }
-  return total;
-}
-
-// Passt das Intervall so an, dass das Tageskontingent bis zum letzten Spiel reicht.
+// Mit Live-Server: eingestelltes Intervall. Ohne: die Daten auf GitHub ändern sich
+// nur alle ~15 Min., öfter nachzusehen bringt nichts.
 function computeInterval() {
   const user = Math.max(CONFIG.minInterval, Number(store.get('interval', CONFIG.defaultInterval)) || CONFIG.defaultInterval);
-  if (S.provider === demoProvider) return { sec: user, throttled: false };
-  const q = getQuota();
-  if (q.remaining === null || q.remaining === undefined) return { sec: user, throttled: false };
-  const avail = q.remaining - CONFIG.quotaReserve;
-  if (avail <= 0) return { sec: null, throttled: true };
-  const secs = remainingLiveMs(Date.now()) / 1000;
-  if (secs / user <= avail) return { sec: user, throttled: false };
-  return { sec: Math.ceil(secs / avail), throttled: true };
+  return liveUrl() ? user : Math.max(user, CONFIG.fallbackInterval);
 }
 
 function notifyGoal(prev, next) {
@@ -196,21 +192,35 @@ function notifyGoal(prev, next) {
   const after = (next.goals.home ?? 0) + (next.goals.away ?? 0);
   if (!S.live.seen.has(next.fixture.id) || after <= before) return;
   const goal = (next.events || []).filter((e) => e.type === 'Goal' && e.detail !== 'Missed Penalty').at(-1);
-  const title = `⚽ ${next.teams.home.name} ${next.goals.home}:${next.goals.away} ${next.teams.away.name}`;
-  const body = goal ? `${goal.time.elapsed}' ${goal.player?.name ?? ''} (${goal.team.name})` : '';
+  const h = S.byId.get(next.fixture.id)?.teams.home.name ?? next.teams.home.name;
+  const a = S.byId.get(next.fixture.id)?.teams.away.name ?? next.teams.away.name;
+  const title = `⚽ ${h} ${next.goals.home}:${next.goals.away} ${a}`;
+  const body = goal ? `${goal.time.elapsed}' ${goal.player?.name ?? ''}` : '';
   toast(`${title} ${body}`);
   const fav = favId();
-  const onlyFav = store.get('notifyFavOnly', false);
-  if (onlyFav && fav && next.teams.home.id !== fav && next.teams.away.id !== fav) return;
+  if (store.get('notifyFavOnly', false) && fav && next.teams.home.id !== fav && next.teams.away.id !== fav) return;
   if (store.get('notify', false) && 'Notification' in window && Notification.permission === 'granted') {
     try { new Notification(title, { body, icon: 'icon.svg', tag: 'goal-' + next.fixture.id }); } catch { /* iOS ohne PWA */ }
   }
 }
 
+async function fetchUpdates(cands) {
+  if (liveUrl()) {
+    const season = cands[0].fixture.season || S.season;
+    const r = await getJson(`${liveUrl()}/match?season=${encodeURIComponent(season)}&ids=${cands.map((f) => f.fixture.id).join(',')}`);
+    if (r.error) throw new Error(r.error);
+    return r.list;
+  }
+  const [fx, mt] = await Promise.all([getJson('data/fixtures.json'), getJson('data/matches.json')]);
+  S.updated = fx.updated;
+  const ids = new Set(cands.map((f) => f.fixture.id));
+  return fx.list.filter((f) => ids.has(f.fixture.id)).map((f) => mt[f.fixture.id] ?? f);
+}
+
 async function poll(cands) {
   S.live.polling = true;
   try {
-    const upd = await S.provider.getFixturesByIds(cands.map((f) => f.fixture.id));
+    const upd = await fetchUpdates(cands);
     let finished = false;
     for (const f of upd) {
       const prev = S.byId.get(f.fixture.id);
@@ -232,15 +242,13 @@ async function poll(cands) {
 }
 
 function tick() {
-  if (S.loading || S.live.polling || !S.league) return;
+  if (S.loading || S.live.polling || !S.fixtures.length) return;
   if (document.hidden && !store.get('notify', false)) return;
   const cands = liveCandidates();
   updateLiveDot();
   if (!cands.length) { S.live.interval = null; return; }
-  syncQuota();
   S.live.interval = computeInterval();
-  if (S.live.interval.sec === null) return;
-  if (Date.now() - S.live.lastPoll >= S.live.interval.sec * 1000 - 300) poll(cands);
+  if (Date.now() - S.live.lastPoll >= S.live.interval * 1000 - 300) poll(cands);
 }
 
 function updateLiveDot() {
@@ -250,31 +258,36 @@ function updateLiveDot() {
 }
 
 function liveStatusText() {
-  const iv = S.live.interval;
-  const q = getQuota();
   const parts = [];
-  if (S.live.lastPoll) parts.push(`Aktualisiert ${Math.round((Date.now() - S.live.lastPoll) / 1000)} s`);
-  if (iv?.sec) parts.push(`alle ${iv.sec} s${iv.throttled ? ' (gedrosselt wegen Kontingent)' : ''}`);
-  if (iv && iv.sec === null) parts.push('<b>Tageskontingent aufgebraucht</b>');
-  if (S.provider !== demoProvider && q.remaining !== null) parts.push(`Kontingent ${q.remaining}${q.limit ? '/' + q.limit : ''}`);
+  if (S.live.lastPoll) parts.push(`Abgefragt vor ${Math.round((Date.now() - S.live.lastPoll) / 1000)} s`);
+  if (S.live.interval) parts.push(`alle ${S.live.interval} s`);
+  if (liveUrl()) parts.push('Quelle: Live-Server');
+  else parts.push(`Quelle: GitHub, Stand ${S.updated ? timeAgo(Date.parse(S.updated)) : '?'} <button class="link" data-open-settings>(Echtzeit einrichten)</button>`);
   if (S.live.error) parts.push(`<span class="err">${esc(S.live.error)}</span>`);
   return parts.join(' · ');
 }
 
 // ---------- Views ----------
 
-function zoneClass(desc) {
-  if (!desc) return '';
-  if (/promotion|aufstieg/i.test(desc)) return /play|relegation/i.test(desc) ? 'z-up2' : 'z-up';
-  if (/relegation|abstieg/i.test(desc)) return 'z-down';
-  return '';
+// Formkurve (letzte 5) aus dem Spielplan berechnen; bei Heim/Auswärts nur diese Spiele.
+function formFor(teamId, view) {
+  const res = [];
+  for (const f of S.fixtures) {
+    if (st(f) !== 'FT') continue;
+    const home = f.teams.home.id === teamId, away = f.teams.away.id === teamId;
+    if (!(home && view !== 'auswaerts') && !(away && view !== 'heim')) continue;
+    const gf = home ? f.goals.home : f.goals.away, ga = home ? f.goals.away : f.goals.home;
+    res.push(gf > ga ? 'W' : gf === ga ? 'D' : 'L');
+  }
+  return res.slice(-5).join('');
 }
 
 function viewTable() {
-  if (!S.standings.length) return emptyState('Keine Tabelle verfügbar.');
+  const rowsData = S.tables[S.ui.table]?.length ? S.tables[S.ui.table] : S.standings;
+  if (!rowsData.length) return emptyState('Keine Tabelle verfügbar.');
   const fav = favId();
   const form = (s) => [...(s || '')].map((c) => `<i class="f-${c}">${{ W: 'S', D: 'U', L: 'N' }[c] ?? c}</i>`).join('');
-  const rows = S.standings.map((r) => `<tr class="${zoneClass(r.description)} ${r.team.id === fav ? 'fav' : ''}" data-team="${r.team.id}">
+  const rows = rowsData.map((r) => `<tr class="${r.team.id === fav ? 'fav' : ''}" data-team="${r.team.id}">
       <td class="rk">${r.rank}</td>
       <td class="tm"><div>${logo(r.team)}<span>${esc(r.team.name)}</span></div></td>
       <td>${r.all.played}</td>
@@ -282,19 +295,19 @@ function viewTable() {
       <td class="hide-s">${r.all.goals.for}:${r.all.goals.against}</td>
       <td>${r.goalsDiff > 0 ? '+' : ''}${r.goalsDiff}</td>
       <td class="pts">${r.points}</td>
-      <td class="frm hide-xs">${form(r.form)}</td>
+      <td class="frm hide-xs">${form(r.form || formFor(r.team.id, S.ui.table))}</td>
     </tr>`).join('');
-  const legend = [...new Set(S.standings.map((r) => r.description).filter(Boolean))]
-    .map((d) => `<span class="lg ${zoneClass(d)}">${esc(d)}</span>`).join('');
-  return `<section class="card">
+  const tabs = Object.entries(TABLES).map(([k, v]) => `<button class="seg ${k === S.ui.table ? 'on' : ''}" data-table="${k}">${v}</button>`).join('');
+  return `<div class="segs">${tabs}</div>
+  <section class="card">
     <table class="standings">
       <thead><tr><th>#</th><th class="tm">Team</th><th title="Spiele">Sp</th>
         <th class="hide-s" title="Siege">S</th><th class="hide-s" title="Unentschieden">U</th><th class="hide-s" title="Niederlagen">N</th>
         <th class="hide-s">Tore</th><th title="Tordifferenz">+/-</th><th>Pkt</th><th class="hide-xs">Form</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    ${legend ? `<div class="legend">${legend}</div>` : ''}
-  </section>`;
+  </section>
+  ${S.updated ? `<p class="muted small center">Quelle: 2liga.at · Stand ${timeAgo(Date.parse(S.updated))}</p>` : ''}`;
 }
 
 function rounds() {
@@ -304,7 +317,7 @@ function rounds() {
     if (!m.has(r)) m.set(r, []);
     m.get(r).push(f);
   }
-  return [...m.entries()].sort((a, b) => roundNo(a[0]) - roundNo(b[0]) || ko(a[1][0]) - ko(b[1][0]));
+  return [...m.entries()].sort((a, b) => roundNo(a[0]) - roundNo(b[0]));
 }
 
 function currentRound(all) {
@@ -315,8 +328,8 @@ function currentRound(all) {
 function groupByDay(list) {
   let html = '', last = '';
   for (const f of list) {
-    const k = dayKey(ko(f));
-    if (k !== last) { html += `<h3 class="day">${fmtLongDate(ko(f))}</h3>`; last = k; }
+    const k = f.fixture.timestamp ? dayKey(ko(f)) : 'tbd';
+    if (k !== last) { html += `<h3 class="day">${f.fixture.timestamp ? fmtLongDate(ko(f)) : 'Termin offen'}</h3>`; last = k; }
     html += matchRow(f, { showDate: false });
   }
   return html;
@@ -332,7 +345,7 @@ function viewFixtures() {
     const id = Number(S.ui.team);
     const list = S.fixtures.filter((f) => f.teams.home.id === id || f.teams.away.id === id);
     const next = list.find((f) => !isFinal(f));
-    return `${toolbar('<span class="grow">Saison ' + S.league.season + '/' + String(S.league.season + 1).slice(-2) + '</span>')}
+    return `${toolbar(`<span class="grow">Saison ${seasonLabel()}</span>`)}
       <section class="card list">${list.map((f) => `<div class="${f === next ? 'is-next' : ''}">${roundTag(f)}${matchRow(f)}</div>`).join('')}</section>`;
   }
 
@@ -350,7 +363,7 @@ const roundTag = (f) => `<div class="round-tag">${esc(roundLabel(f.league.round)
 
 function eventIcon(e) {
   if (e.type === 'Goal') return e.detail === 'Missed Penalty' ? '❌' : e.detail === 'Own Goal' ? '⚽<small>ET</small>' : e.detail === 'Penalty' ? '⚽<small>11m</small>' : '⚽';
-  if (e.type === 'Card') return /red/i.test(e.detail) ? '<i class="card-r"></i>' : /yellow/i.test(e.detail) && /second/i.test(e.detail) ? '<i class="card-yr"></i>' : '<i class="card-y"></i>';
+  if (e.type === 'Card') return /red/i.test(e.detail) ? '<i class="card-r"></i>' : /second/i.test(e.detail) ? '<i class="card-yr"></i>' : '<i class="card-y"></i>';
   if (e.type === 'subst') return '🔁';
   if (e.type === 'Var') return '📺';
   return '•';
@@ -360,30 +373,46 @@ function eventText(e) {
   const p = esc(e.player?.name ?? '');
   if (e.type === 'subst') return `<b>${esc(e.assist?.name ?? '')}</b> für ${p}`;
   if (e.type === 'Goal' && e.assist?.name) return `<b>${p}</b> <small>(Vorlage ${esc(e.assist.name)})</small>`;
-  if (e.type === 'Var') return `VAR: ${esc(e.detail)} ${p}`;
+  if (e.type === 'Other') return `${esc(e.detail)} ${p}`;
   return `<b>${p}</b>`;
 }
 
 function timeline(f, events) {
-  if (!events?.length) return '<p class="muted small">Noch keine Ereignisse.</p>';
+  if (!events?.length) return isFinal(f) || isLive(f) ? '<p class="muted small">Keine Ereignisse.</p>' : '';
   const homeId = f.teams.home.id;
-  return `<ol class="timeline">${[...events].reverse().map((e) => `<li class="${e.team.id === homeId ? 'h' : 'a'} ev-${esc(e.type).toLowerCase()}">
+  return `<ol class="timeline">${[...events].reverse().map((e) => {
+    const isHome = e.side ? e.side === 'home' : e.team.id === homeId;
+    return `<li class="${isHome ? 'h' : 'a'} ev-${esc(e.type).toLowerCase()}">
       <span class="min">${e.time.elapsed}'${e.time.extra ? '+' + e.time.extra : ''}</span>
       <span class="ico">${eventIcon(e)}</span>
       <span class="txt">${eventText(e)}</span>
-    </li>`).join('')}</ol>`;
+    </li>`;
+  }).join('')}</ol>`;
 }
 
-function liveCard(f) {
+function statsBlock(id) {
+  const s = S.stats.get(id);
+  if (!s?.length) return '';
+  const pct = (v) => Number(String(v).replace(/[^\d.]/g, '')) || 0;
+  return `<div class="stats">${s.map((x) => {
+    const h = pct(x.home), a = pct(x.away), sum = h + a || 1;
+    return `<div class="stat"><span>${esc(x.home)}</span><span class="lbl">${esc(x.type)}</span><span>${esc(x.away)}</span>
+      <div class="bar"><i style="width:${(h / sum) * 100}%"></i></div></div>`;
+  }).join('')}</div>`;
+}
+
+function liveCard(f, { details = false } = {}) {
   const h = f.teams.home, a = f.teams.away;
+  const ht = f.score?.halftime;
   return `<article class="card live-card ${isLive(f) ? 'on' : ''}">
-    <header class="lc-head">${statusBadge(f) || `<span class="badge">${isFinal(f) ? 'Ende' : 'Anpfiff ' + fmtTime(ko(f))}</span>`}<span class="muted small">${esc(f.fixture.venue?.name ?? '')}</span></header>
+    <header class="lc-head">${statusBadge(f) || `<span class="badge">${isFinal(f) ? 'Ende' : f.fixture.timestamp ? 'Anpfiff ' + fmtTime(ko(f)) : 'Termin offen'}</span>`}<span class="muted small">${esc(f.fixture.venue?.name ?? '')}</span></header>
     <div class="lc-score" data-fixture="${f.fixture.id}">
       <div class="lc-team">${logo(h, 'logo lg')}<span>${esc(h.name)}</span></div>
-      <div class="lc-goals">${f.goals.home ?? '–'}<span>:</span>${f.goals.away ?? '–'}</div>
+      <div class="lc-goals">${f.goals.home ?? '–'}<span>:</span>${f.goals.away ?? '–'}${ht?.home != null ? `<small>(${ht.home}:${ht.away})</small>` : ''}</div>
       <div class="lc-team">${logo(a, 'logo lg')}<span>${esc(a.name)}</span></div>
     </div>
     ${timeline(f, S.events.get(f.fixture.id))}
+    ${details ? statsBlock(f.fixture.id) : ''}
   </article>`;
 }
 
@@ -391,17 +420,18 @@ function viewLive() {
   const now = Date.now();
   const cands = liveCandidates(now);
   const todayKey = dayKey(now);
-  const today = S.fixtures.filter((f) => dayKey(ko(f)) === todayKey && !cands.includes(f));
+  const today = S.fixtures.filter((f) => f.fixture.timestamp && dayKey(ko(f)) === todayKey && !cands.includes(f));
   const status = `<p id="live-status" class="live-status">${liveStatusText()}</p>`;
   let html = '';
   if (cands.length) {
-    html += status + cands.map(liveCard).join('');
+    html += status + cands.map((f) => liveCard(f)).join('');
   } else {
-    const next = S.fixtures.find((f) => !isFinal(f) && ko(f) > now);
+    const next = S.fixtures.find((f) => f.fixture.timestamp && !isFinal(f) && ko(f) > now);
     html += `<section class="card hero">
       <p class="big">Gerade läuft kein Spiel.</p>
       ${next ? `<p>Nächstes Spiel ${countdown(ko(next))}<br><span class="muted">${fmtLongDate(ko(next))}, ${fmtTime(ko(next))} Uhr</span></p>${matchRow(next)}` : '<p class="muted">Keine weiteren Spiele geplant.</p>'}
-      <p class="muted small">Der Ticker startet automatisch ${CONFIG.liveBeforeKickoff / 60e3} Min. vor Anpfiff, solange die App offen ist.</p>
+      <p class="muted small">Der Ticker startet automatisch ${CONFIG.liveBeforeKickoff / 60e3} Min. vor Anpfiff, solange die App offen ist.
+      ${liveUrl() ? 'Aktualisierung über den Live-Server.' : 'Ohne Live-Server nur etwa alle 15 Min. aktuell.'}</p>
     </section>`;
   }
   if (today.length) html += `<h3 class="day">Heute</h3><section class="card list">${today.map((f) => matchRow(f, { showDate: false })).join('')}</section>`;
@@ -412,14 +442,16 @@ function viewLive() {
 
 const GENERIC = /\b(FC|SV|SK|SKN|SKU|SC|FK|KSV|ASK|ATSV|USV|WSC|AC|BW|SW|TSV|FAC|SPG|1\.)(?=\s|$)\.?/g;
 
-function aliasTerms(name) {
+function aliasTerms(team) {
+  const name = team.name;
   const terms = new Set([name]);
   if (/\b(II|Juniors|Amateure)\b/.test(name)) {
     const words = name.replace(/\s+II$/, '').replace(GENERIC, '').trim().split(/\s+/);
     if (/\sII$/.test(name) && words[0]) terms.add(words[0] + ' II');
   } else {
-    const core = name.replace(GENERIC, '').replace(/\s+/g, ' ').trim();
-    if (core.length >= 4 && core !== name) terms.add(core);
+    const core = name.replace(GENERIC, '').replace(/\b(18|19)\d\d\b/, '').replace(/\s+/g, ' ').trim();
+    // Reine Städtenamen (z. B. "FAC WIEN" → "WIEN") wären viel zu ungenau
+    if (core.length >= 4 && core !== name && /\s/.test(core)) terms.add(core);
   }
   for (const [k, v] of Object.entries(CONFIG.aliases)) if (name.includes(k)) v.forEach((x) => terms.add(x));
   return [...terms].map(norm);
@@ -437,7 +469,7 @@ function containsWord(text, term) {
 }
 
 function taggedNews() {
-  const matchers = teams().map((t) => ({ team: t, terms: aliasTerms(t.name) }));
+  const matchers = teams().map((t) => ({ team: t, terms: aliasTerms(t) }));
   return (S.news?.items ?? []).map((it) => {
     const text = norm(`${it.title} ${it.summary ?? ''}`);
     return { ...it, teams: matchers.filter((m) => m.terms.some((t) => containsWord(text, t))).map((m) => m.team) };
@@ -451,11 +483,14 @@ function viewNews() {
   const list = sel.size ? all.filter((n) => n.teams.some((t) => sel.has(t.id))) : all;
   const fav = favId();
   const chips = teams().map((t) => `<button class="chip ${sel.has(t.id) ? 'on' : ''}" data-news-team="${t.id}">${logo(t, 'logo xs')}${esc(t.name)}${t.id === fav ? ' ★' : ''}</button>`).join('');
-  const items = list.map((n) => `<a class="news" href="${esc(n.link)}" target="_blank" rel="noopener">
-      <span class="src">${esc(n.source ?? '')} · ${n.date ? timeAgo(Date.parse(n.date)) : ''}</span>
-      <span class="ttl">${esc(n.title)}</span>
-      ${n.summary ? `<span class="sum">${esc(n.summary)}</span>` : ''}
-      ${n.teams.length ? `<span class="tags">${n.teams.map((t) => `<i>${esc(t.name)}</i>`).join('')}</span>` : ''}
+  const items = list.map((n) => `<a class="news ${n.image ? 'has-img' : ''}" href="${esc(n.link)}" target="_blank" rel="noopener">
+      ${n.image ? `<img class="thumb" src="${esc(n.image)}" alt="" loading="lazy">` : ''}
+      <span class="body">
+        <span class="src">${esc(n.source ?? '')}${n.date ? ' · ' + timeAgo(Date.parse(n.date)) : ''}</span>
+        <span class="ttl">${esc(n.title)}</span>
+        ${n.summary ? `<span class="sum">${esc(n.summary)}</span>` : ''}
+        ${n.teams.length ? `<span class="tags">${n.teams.map((t) => `<i>${esc(t.name)}</i>`).join('')}</span>` : ''}
+      </span>
     </a>`).join('');
   return `<div class="chips">
       <button class="chip ${sel.size ? '' : 'on'}" data-news-team="">Alle</button>
@@ -463,7 +498,7 @@ function viewNews() {
       ${chips}
     </div>
     <section class="card list">${items || '<p class="muted pad">Keine News für diese Auswahl.</p>'}</section>
-    <p class="muted small center">${S.news.updated ? `Stand ${timeAgo(Date.parse(S.news.updated))}` : 'Noch keine News geladen – die GitHub Action aktualisiert alle 30 Min.'}</p>`;
+    <p class="muted small center">${S.news.updated ? `Stand ${timeAgo(Date.parse(S.news.updated))}` : 'Noch keine News geladen – die GitHub Action aktualisiert alle 15 Min.'}</p>`;
 }
 
 function emptyState(msg) {
@@ -479,23 +514,17 @@ async function openFixture(id) {
   const body = $('#match-body');
   const draw = () => {
     const cur = S.byId.get(id);
-    body.innerHTML = `${liveCard(cur)}
-      <p class="muted small center">${esc(roundLabel(cur.league.round))} · ${fmtLongDate(ko(cur))}, ${fmtTime(ko(cur))} Uhr${cur.fixture.referee ? ' · SR ' + esc(cur.fixture.referee) : ''}</p>`;
+    body.innerHTML = `${liveCard(cur, { details: true })}
+      <p class="muted small center">${esc(roundLabel(cur.league.round))}${cur.fixture.timestamp ? ` · ${fmtLongDate(ko(cur))}, ${fmtTime(ko(cur))} Uhr` : ''}${cur.fixture.referee ? ' · SR ' + esc(cur.fixture.referee) : ''}${cur.fixture.attendance ? ' · ' + cur.fixture.attendance.toLocaleString('de-AT') + ' Zuschauer' : ''}</p>
+      ${cur.fixture.season ? `<p class="center small"><a href="${esc(reportUrl(cur))}" target="_blank" rel="noopener">Spielbericht auf 2liga.at ↗</a></p>` : ''}`;
   };
   draw();
   dlg.showModal();
   const started = !['NS', 'TBD', 'PST', 'CANC'].includes(st(f));
-  if (started && !S.events.has(id)) {
-    const ck = 'cache:ev:' + id;
-    const cached = store.get(ck, null);
-    if (cached) { S.events.set(id, cached); draw(); return; }
+  if (started && !S.events.has(id) && liveUrl() && f.fixture.season) {
     try {
-      const [full] = await S.provider.getFixturesByIds([id]);
-      if (full) {
-        mergeFixture(full);
-        if (FINAL.has(full.fixture.status.short)) store.set(ck, full.events ?? []);
-        if (dlg.open) draw();
-      }
+      const r = await getJson(`${liveUrl()}/match?season=${encodeURIComponent(f.fixture.season)}&ids=${id}`);
+      if (r.list?.[0]) { mergeFixture(r.list[0]); if (dlg.open) draw(); }
     } catch (e) { toast(e.message); }
   }
 }
@@ -504,58 +533,31 @@ async function openFixture(id) {
 
 function openSettings() {
   const dlg = $('#settings-dialog');
-  const q = getQuota();
   const fav = favId();
   const teamOpts = teams().map((t) => `<option value="${t.id}" ${t.id === fav ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
   $('#settings-body').innerHTML = `
-    <label>API-Football Key
-      <input type="password" id="set-key" value="${esc(store.get('apiKey', ''))}" autocomplete="off" spellcheck="false" placeholder="Key von dashboard.api-football.com">
-      <small class="muted">Wird nur in diesem Browser gespeichert, nie im Repository.</small>
-    </label>
-    <label class="row"><input type="checkbox" id="set-demo" ${store.get('demo', false) ? 'checked' : ''}> Demo-Modus (erfundene Daten)</label>
     <label>Mein Team
       <select id="set-fav"><option value="">– keins –</option>${teamOpts}</select>
     </label>
     <label>Live-Aktualisierung (Sekunden)
       <input type="number" id="set-interval" min="${CONFIG.minInterval}" max="600" step="5" value="${store.get('interval', CONFIG.defaultInterval)}">
-      <small class="muted">Wird automatisch verlängert, falls das Tageskontingent sonst nicht reicht.</small>
+      <small class="muted">${liveUrl() ? 'Live-Server aktiv.' : `Ohne Live-Server mindestens ${CONFIG.fallbackInterval} s – neue Daten gibt es dann nur ca. alle 15 Min.`}</small>
     </label>
     <label class="row"><input type="checkbox" id="set-notify" ${store.get('notify', false) ? 'checked' : ''}> Benachrichtigung bei Toren</label>
     <label class="row"><input type="checkbox" id="set-notify-fav" ${store.get('notifyFavOnly', false) ? 'checked' : ''}> … nur für mein Team</label>
-    <div class="quota" id="quota-box">Kontingent heute: ${q.remaining ?? '?'}${q.limit ? ' / ' + q.limit : ''} Anfragen übrig</div>
-    <details><summary>Erweitert</summary>
-      <label>Liga-ID (leer = automatisch)<input type="number" id="set-league" value="${store.get('leagueId', '') ?? ''}"></label>
-      <label>Saison (Startjahr, leer = automatisch)<input type="number" id="set-season" value="${store.get('season', '') ?? ''}"></label>
-      <div class="btn-row">
-        <button type="button" id="btn-status">Kontingent prüfen</button>
-        <button type="button" id="btn-clear">Cache leeren</button>
-      </div>
+    <details ${!liveUrl() ? 'open' : ''}><summary>Live-Server (Echtzeit-Ticker)</summary>
+      <p class="small muted">${S.config.liveUrl ? `Automatisch eingerichtet: ${esc(S.config.liveUrl)}` : 'Noch keiner eingerichtet. Anleitung: README im Repository (Cloudflare Worker, gratis).'}</p>
+      <label>Eigene URL (leer = automatisch)<input type="url" id="set-live" value="${esc(store.get('liveUrl', ''))}" placeholder="https://ligazwa-live.xxx.workers.dev"></label>
     </details>`;
   dlg.showModal();
-
-  $('#btn-status').onclick = async () => {
-    try {
-      const s = await S.provider.getStatus();
-      $('#quota-box').textContent = `Plan: ${s.plan ?? '?'} · heute ${s.remaining ?? '?'}${s.limit ? ' / ' + s.limit : ''} Anfragen übrig`;
-    } catch (e) { $('#quota-box').textContent = e.message; }
-  };
-  $('#btn-clear').onclick = () => { store.clearCache(); toast('Cache geleert'); };
 }
 
 async function saveSettings() {
-  const prevKey = store.get('apiKey', '');
-  const prevDemo = store.get('demo', false);
-  const prevLeague = [store.get('leagueId', null), store.get('season', null)].join();
-  const key = $('#set-key').value.trim();
-  store.set('apiKey', key);
-  store.set('demo', $('#set-demo').checked);
+  const prevLive = liveUrl();
   store.set('favorite', Number($('#set-fav').value) || null);
   store.set('interval', Math.max(CONFIG.minInterval, Number($('#set-interval').value) || CONFIG.defaultInterval));
   store.set('notifyFavOnly', $('#set-notify-fav').checked);
-  const lid = Number($('#set-league').value) || null;
-  const sea = Number($('#set-season').value) || null;
-  store.set('leagueId', lid);
-  store.set('season', sea);
+  store.set('liveUrl', $('#set-live').value.trim());
 
   const wantNotify = $('#set-notify').checked;
   if (wantNotify && 'Notification' in window && Notification.permission === 'default') {
@@ -563,19 +565,9 @@ async function saveSettings() {
   }
   store.set('notify', wantNotify && 'Notification' in window && Notification.permission === 'granted');
   if (wantNotify && !store.get('notify')) toast('Benachrichtigungen vom Browser blockiert.');
-
-  if (key !== prevKey || $('#set-demo').checked !== prevDemo || [lid, sea].join() !== prevLeague) {
-    if (key !== prevKey) store.clearCache();
-    pickProvider();
-    lastStatus = 0;
-    S.events.clear();
-    S.live = { lastPoll: 0, polling: false, error: null, interval: null, seen: new Set() };
-    S.ui.round = null;
-    loadAll(true, true);
-    loadNews();
-  } else {
-    render();
-  }
+  if (liveUrl() !== prevLive) S.live.lastPoll = 0;
+  render();
+  tick();
 }
 
 // ---------- Rendering & Routing ----------
@@ -588,14 +580,11 @@ function route() {
 function render() {
   const r = route();
   $$('nav a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + r));
-  const title = S.league ? `${S.league.name} ${S.league.season}/${String(S.league.season + 1).slice(-2)}` : '2. Liga';
-  $('#league-name').textContent = title;
-  const banner = S.provider === demoProvider
-    ? `<div class="banner">Demo-Modus mit erfundenen Daten. <button class="link" data-open-settings>API-Key eintragen</button></div>` : '';
+  $('#league-name').textContent = `ADMIRAL 2. Liga ${seasonLabel()}`;
   const err = S.error ? `<div class="banner err">${esc(S.error)} <button class="link" data-reload>Neu laden</button></div>` : '';
   const view = { tabelle: viewTable, spielplan: viewFixtures, live: viewLive, news: viewNews }[r];
   const scrollY = window.scrollY;
-  $('#view').innerHTML = banner + err + view();
+  $('#view').innerHTML = err + view();
   window.scrollTo(0, scrollY);
 }
 
@@ -604,9 +593,10 @@ function bindEvents() {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(); render(); } });
 
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-fixture],[data-round-step],[data-news-team],[data-open-settings],[data-reload],[data-close]');
+    const t = e.target.closest('[data-fixture],[data-round-step],[data-news-team],[data-open-settings],[data-reload],[data-close],[data-table]');
     if (!t) return;
     if (t.dataset.fixture) openFixture(Number(t.dataset.fixture));
+    else if (t.dataset.table) { S.ui.table = t.dataset.table; store.set('tableView', S.ui.table); render(); }
     else if (t.dataset.roundStep) {
       const all = rounds();
       const i = all.findIndex(([r]) => r === S.ui.round) + Number(t.dataset.roundStep);
@@ -622,7 +612,7 @@ function bindEvents() {
       store.set('newsTeams', S.ui.newsTeams);
       render();
     } else if ('openSettings' in t.dataset) openSettings();
-    else if ('reload' in t.dataset) loadAll(true);
+    else if ('reload' in t.dataset) loadAll();
     else if ('close' in t.dataset) t.closest('dialog').close();
   });
 
@@ -635,17 +625,18 @@ function bindEvents() {
   $('#settings-form').addEventListener('submit', (e) => {
     if (e.submitter?.value === 'save') saveSettings();
   });
-  $('#refresh-btn').addEventListener('click', () => { loadAll(true); loadNews(); });
+  $('#refresh-btn').addEventListener('click', () => { loadAll(); loadNews(); });
 }
 
 function init() {
-  pickProvider();
   bindEvents();
   render();
   loadAll();
   loadNews();
   setInterval(tick, 1000);
   setInterval(loadNews, 10 * 60e3);
+  // Ohne Live-Spiel Tabelle & Spielplan gelegentlich neu laden (GitHub-Daten ändern sich alle 15 Min.)
+  setInterval(() => { if (!liveCandidates().length && !document.hidden) loadAll(); }, 15 * 60e3);
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }

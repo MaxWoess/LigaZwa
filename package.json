@@ -1,0 +1,11 @@
+{
+  "name": "ligazwa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-data": "node scraper/build.mjs"
+  },
+  "dependencies": {
+    "node-html-parser": "^6.1.13"
+  }
+}

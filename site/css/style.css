@@ -232,3 +232,20 @@ dialog::backdrop { background: rgb(0 0 0 / .5); }
 @keyframes tin { from { transform: translateY(8px); opacity: 0; } }
 .spinner { width: 28px; height: 28px; margin: 10px auto; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Tabellen-Umschalter, Statistik, News-Bilder */
+.segs { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 3px; margin-bottom: 12px; gap: 2px; }
+.seg { border: 0; background: none; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13.5px; color: var(--muted); }
+.seg.on { background: var(--accent); color: #fff; font-weight: 600; }
+.lc-goals small { display: block; font-size: 13px; font-weight: 500; color: var(--muted); text-align: center; letter-spacing: 0; }
+.stats { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
+.stat { display: grid; grid-template-columns: 48px 1fr 48px; align-items: center; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.stat > span:first-child { text-align: left; font-weight: 700; }
+.stat > span:nth-child(3) { text-align: right; font-weight: 700; }
+.stat .lbl { text-align: center; color: var(--muted); font-size: 12.5px; }
+.stat .bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; margin-top: 3px; }
+.stat .bar i { display: block; height: 100%; background: var(--accent); }
+.news.has-img { flex-direction: row; gap: 12px; align-items: flex-start; }
+.news .body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.news .thumb { width: 96px; height: 64px; object-fit: cover; border-radius: 8px; flex: none; background: var(--surface-2); }
+.news.has-img .ttl { font-size: 14.5px; }
