@@ -1,23 +1,31 @@
 name: Probe 2liga.at (temporär)
 on: workflow_dispatch
+permissions:
+  contents: write
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Analyse
+      - name: Seiten laden
         run: |
           UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36'
-          mkdir p && cd p
-          for u in https://www.2liga.at/de https://www.2liga.at/de/tabelle https://www.2liga.at/de/spielplan https://www.2liga.at/de/news https://www.2liga.at/robots.txt; do
-            f=$(echo "$u" | sed 's#[^a-z0-9]#_#g')
-            code=$(curl -sL -A "$UA" -o "$f" -w '%{http_code} %{url_effective} %{content_type}' "$u")
-            echo "=== $u -> $code size=$(wc -c < "$f")"
-          done
-          echo "=== robots"; cat *robots_txt | head -40
-          echo "=== HTML head (home)"; head -c 3000 https___www_2liga_at_de; echo
-          echo "=== links"; cat https___www_2liga_at_de | grep -oE 'href="[^"]+"' | sort -u | head -150
-          echo "=== scripts"; cat https___www_2liga_at_de | grep -oE '<script[^>]*src="[^"]+"' | head -40
-          echo "=== api/json/feed-ish urls in all pages"; cat https___* | grep -oiE '(https?:)?//[a-z0-9.-]+[^"'"'"' <>)]*(api|json|feed|rss|live|ticker|graphql|sportradar|opta|widget)[^"'"'"' <>)]*' | sort -u | head -80
-          echo "=== inline data hints"; cat https___* | grep -oiE '(__NEXT_DATA__|__NUXT__|window\.__[A-Z_]+|data-api[a-z-]*="[^"]*"|data-src="[^"]*json[^"]*")' | sort | uniq -c | head -30
-          echo "=== tabelle snippet"; grep -oiE '.{0,300}(Punkte|Tordifferenz|Pkt).{0,600}' https___www_2liga_at_de_tabelle | head -c 4000; echo
-          echo "=== spielplan snippet"; sed 's/<[^>]*>/ /g' https___www_2liga_at_de_spielplan | tr -s ' \n' | grep -iE 'runde|spieltag|[0-9]{2}:[0-9]{2}' | head -60
+          mkdir -p p/js && cd p
+          get() { curl -sL -m 30 -A "$UA" -o "$2" "$1"; echo "$1 -> $(wc -c < "$2")"; }
+          get https://www.2liga.at/de home.html
+          get https://www.2liga.at/de/tabelle tabelle.html
+          get https://www.2liga.at/de/spielplan spielplan.html
+          get https://www.2liga.at/de/news news.html
+          get https://www.2liga.at/de/team/skn-st-pölten/10301 team.html
+          for s in info vorbericht liveticker ticker live aufstellung statistik; do get "https://www.2liga.at/de/spielbericht/saison-2026-2027/56865/$s" "sb-$s.html"; done
+          # Fertige Spiele der letzten Runde (IDs ~ 56857)
+          get https://www.2liga.at/de/spielbericht/saison-2026-2027/56857/info sb-past-info.html
+          grep -ohE '/_next/static/chunks/[^"]+\.js' *.html | sort -u | while read j; do get "https://www.2liga.at$j" "js/$(basename "$j")" >/dev/null; done
+          ls -la js | wc -l
+          grep -ohE 'https?://[a-zA-Z0-9.-]+\.[a-z]{2,}[^"'"'"' ]{0,80}' js/*.js | grep -viE 'w3\.org|reactjs|nextjs|github|mozilla|schema\.org' | sort | uniq -c | sort -rn | head -60
+      - name: Auf Branch probe-data ablegen
+        run: |
+          cd p
+          git init -q && git checkout -q -b probe-data
+          git config user.name probe && git config user.email probe@users.noreply.github.com
+          git add -A && git commit -qm probe
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" probe-data
