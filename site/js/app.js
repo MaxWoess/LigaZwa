@@ -15,6 +15,8 @@ const S = {
   byId: new Map(),
   events: new Map(),
   stats: new Map(),
+  commentary: new Map(),
+  laolaIds: new Map(),
   news: null,
   updated: null,
   error: null,
@@ -97,9 +99,10 @@ function setFixtures(list) {
 }
 
 function mergeFixture(f) {
-  const { events, statistics, ...rest } = f;
+  const { events, statistics, commentary, ...rest } = f;
   if (events) S.events.set(f.fixture.id, events);
   if (statistics?.length) S.stats.set(f.fixture.id, statistics);
+  if (commentary?.length) S.commentary.set(f.fixture.id, commentary);
   const old = S.byId.get(f.fixture.id);
   // Spielbericht-Daten haben keine Teamkürzel – vom Spielplan übernehmen
   if (old) {
@@ -204,8 +207,66 @@ function notifyGoal(prev, next) {
   }
 }
 
+// laola1 (Sportradar) hat eigene Spiel-IDs und leicht andere Teamnamen
+// ("SKU Amstetten" statt "SKU Ertl Glas Amstetten") – Zuordnung über Anstoß + Namen.
+const NAME_STOP = new Set(['fc', 'sk', 'sv', 'ii', 'skn', 'sku', 'ask', 'ksv', '1894', '1919']);
+const nameTokens = (s) => new Set(norm(s).replace(/[^\p{L}\p{N} ]/gu, ' ').split(/\s+/).filter((w) => w.length > 2 && !NAME_STOP.has(w)));
+const overlap = (a, b) => { const B = nameTokens(b); return [...nameTokens(a)].filter((w) => B.has(w)).length; };
+
+function matchLaola(f, list) {
+  const known = S.laolaIds.get(f.fixture.id);
+  if (known) return list.find((l) => l.laolaId === known);
+  let best = null, bestScore = 0;
+  for (const l of list) {
+    if (Math.abs(Date.parse(l.scheduled) - ko(f)) > 20 * 60e3) continue;
+    const score = overlap(f.teams.home.name, l.teams.home.name) + overlap(f.teams.away.name, l.teams.away.name);
+    if (score > bestScore) { best = l; bestScore = score; }
+  }
+  return best;
+}
+
+function fromLaola(f, l) {
+  const st = l.fixture.status;
+  const g = l.goals;
+  const final = st.short === 'FT';
+  const win = (a, b) => (final ? (a > b ? true : a < b ? false : null) : null);
+  return {
+    ...f,
+    fixture: { ...f.fixture, status: st, venue: l.fixture.venue?.name ? l.fixture.venue : f.fixture.venue },
+    goals: g,
+    score: l.score,
+    teams: { home: { ...f.teams.home, winner: win(g.home, g.away) }, away: { ...f.teams.away, winner: win(g.away, g.home) } },
+    events: l.events,
+    statistics: l.statistics,
+    commentary: l.commentary,
+  };
+}
+
+async function fetchLaola(cands) {
+  const known = cands.map((f) => S.laolaIds.get(f.fixture.id)).filter(Boolean);
+  const r = await getJson(`${liveUrl()}/laola/live${known.length ? '?ids=' + known.join(',') : ''}`);
+  if (r.error) throw new Error(r.error);
+  const out = [];
+  for (const f of cands) {
+    const l = matchLaola(f, r.list || []);
+    if (!l) continue;
+    S.laolaIds.set(f.fixture.id, l.laolaId);
+    out.push(fromLaola(f, l));
+  }
+  if (!out.length) throw new Error('Spiele bei laola1 nicht gefunden');
+  return out;
+}
+
 async function fetchUpdates(cands) {
   if (liveUrl()) {
+    try {
+      const upd = await fetchLaola(cands);
+      S.live.source = 'laola1';
+      return upd;
+    } catch (e) {
+      console.warn('laola1:', e.message, '– Rückfall auf 2liga.at');
+      S.live.source = '2liga.at';
+    }
     const season = cands[0].fixture.season || S.season;
     const r = await getJson(`${liveUrl()}/match?season=${encodeURIComponent(season)}&ids=${cands.map((f) => f.fixture.id).join(',')}`);
     if (r.error) throw new Error(r.error);
@@ -261,7 +322,7 @@ function liveStatusText() {
   const parts = [];
   if (S.live.lastPoll) parts.push(`Abgefragt vor ${Math.round((Date.now() - S.live.lastPoll) / 1000)} s`);
   if (S.live.interval) parts.push(`alle ${S.live.interval} s`);
-  if (liveUrl()) parts.push('Quelle: Live-Server');
+  if (liveUrl()) parts.push(`Quelle: ${S.live.source || 'Live-Server'}`);
   else parts.push(`Quelle: GitHub, Stand ${S.updated ? timeAgo(Date.parse(S.updated)) : '?'} <button class="link" data-open-settings>(Echtzeit einrichten)</button>`);
   if (S.live.error) parts.push(`<span class="err">${esc(S.live.error)}</span>`);
   return parts.join(' · ');
@@ -401,6 +462,18 @@ function statsBlock(id) {
   }).join('')}</div>`;
 }
 
+const TICKER_SKIP = new Set(['goal_kick', 'throw_in', 'free_kick', 'period_score', 'injury_return', 'possible_goal']);
+
+function tickerBlock(id, { all = false } = {}) {
+  const items = (S.commentary.get(id) || []).filter((c) => c.text && !TICKER_SKIP.has(c.type));
+  if (!items.length) return '';
+  const li = (c) => `<li class="tk-${esc(c.type)}"><span class="min">${c.minute != null ? `${c.minute}'${c.extra ? '+' + c.extra : ''}` : ''}</span>
+    <span><b>${esc(c.title ?? '')}</b> ${esc(c.text)}</span></li>`;
+  const head = items.slice(0, all ? items.length : 3).map(li).join('');
+  const rest = all ? '' : items.slice(3).map(li).join('');
+  return `<div class="ticker"><ol>${head}</ol>${rest ? `<details><summary>Alle Ticker-Meldungen (${items.length})</summary><ol>${rest}</ol></details>` : ''}</div>`;
+}
+
 function liveCard(f, { details = false } = {}) {
   const h = f.teams.home, a = f.teams.away;
   const ht = f.score?.halftime;
@@ -412,6 +485,7 @@ function liveCard(f, { details = false } = {}) {
       <div class="lc-team">${logo(a, 'logo lg')}<span>${esc(a.name)}</span></div>
     </div>
     ${timeline(f, S.events.get(f.fixture.id))}
+    ${tickerBlock(f.fixture.id, { all: details })}
     ${details ? statsBlock(f.fixture.id) : ''}
   </article>`;
 }

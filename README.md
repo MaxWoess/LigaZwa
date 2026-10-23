@@ -9,12 +9,13 @@ Alle Daten kommen von **www.2liga.at**, die App läuft auf GitHub Pages.
 |---|---|---|
 | Tabelle, Spielplan, Spielberichte | 2liga.at → GitHub Action → `data/*.json` | alle 15 Min. |
 | News | 2liga.at + Google News + ORF Sport → GitHub Action | alle 15 Min. |
-| Live-Ticker | **mit Live-Server:** Cloudflare Worker liest das 2liga.at-Matchcenter | alle 30 s (einstellbar) |
+| Live-Ticker | **mit Live-Server:** laola1-Matchcenter (Text-Ticker, Tore, Karten, Wechsel, Statistik), Rückfall 2liga.at | alle 30 s (einstellbar) |
 | | ohne Live-Server: Daten der GitHub Action | ca. alle 15 Min. |
 
-Der Browser darf 2liga.at nicht direkt abfragen (CORS). Deshalb gibt es für den Echtzeit-Ticker
-einen kleinen, kostenlosen Cloudflare Worker (`worker/`), der die Seite ausliest und als JSON liefert
-(mit 20 s Cache, damit 2liga.at geschont wird).
+Weder 2liga.at noch laola1 erlauben Abfragen direkt aus dem Browser einer fremden Seite (CORS).
+Deshalb gibt es für den Echtzeit-Ticker einen kleinen, kostenlosen Cloudflare Worker (`worker/`),
+der die Daten holt und mit CORS-Header weiterreicht (10–20 s Cache, damit die Quellen geschont werden).
+laola1 nutzt eigene Spiel-IDs; die App ordnet die Spiele über Anstoßzeit und Teamnamen zu.
 
 ## Einrichtung
 
@@ -39,7 +40,7 @@ einen kleinen, kostenlosen Cloudflare Worker (`worker/`), der die Seite ausliest
 
 - News-Quellen: `scraper/feeds.json`
 - Alias-Namen für den News-Filter, Intervalle: `site/js/config.js`
-- Parser für 2liga.at: `scraper/lib.mjs` (falls sich die Seite ändert, hier anpassen)
+- Parser für 2liga.at: `scraper/lib.mjs`, laola1-Umwandlung: `scraper/laola.mjs`
 - Alle Runden neu laden: Workflow manuell mit „Alle Runden neu laden“ starten
 
 ## Hinweise

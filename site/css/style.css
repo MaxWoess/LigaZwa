@@ -249,3 +249,12 @@ dialog::backdrop { background: rgb(0 0 0 / .5); }
 .news .body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .news .thumb { width: 96px; height: 64px; object-fit: cover; border-radius: 8px; flex: none; background: var(--surface-2); }
 .news.has-img .ttl { font-size: 14.5px; }
+
+/* Text-Ticker (laola1) */
+.ticker { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px; font-size: 13.5px; }
+.ticker ol { list-style: none; margin: 0; padding: 0; }
+.ticker li { display: grid; grid-template-columns: 44px 1fr; gap: 4px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.ticker li:last-child { border-bottom: 0; }
+.ticker .min { font-weight: 700; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+.ticker li.tk-score_change { background: var(--accent-soft); border-radius: 6px; }
+.ticker details summary { cursor: pointer; color: var(--accent); font-weight: 600; padding: 6px 0; }
