@@ -11,14 +11,12 @@ jobs:
           UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36'
           mkdir -p p/js && cd p
           get() { curl -sL -m 30 -A "$UA" -o "$2" "$1"; echo "$1 -> $(wc -c < "$2")"; }
-          get https://www.2liga.at/de home.html
-          get https://www.2liga.at/de/tabelle tabelle.html
-          get https://www.2liga.at/de/spielplan spielplan.html
-          get https://www.2liga.at/de/news news.html
-          get https://www.2liga.at/de/team/skn-st-pölten/10301 team.html
-          for s in info vorbericht liveticker ticker live aufstellung statistik; do get "https://www.2liga.at/de/spielbericht/saison-2026-2027/56865/$s" "sb-$s.html"; done
-          # Fertige Spiele der letzten Runde (IDs ~ 56857)
-          get https://www.2liga.at/de/spielbericht/saison-2026-2027/56857/info sb-past-info.html
+          get "https://www.2liga.at/de/spielbericht/saison-2026-2027/56857/matchcenter" mc-past.html
+          get "https://www.2liga.at/de/spielbericht/saison-2026-2027/56865/matchcenter" mc-next.html
+          get "https://www.2liga.at/de/spielplan?spieltag=1" sp-1.html
+          get "https://www.2liga.at/de/spielplan?spieltag=30" sp-30.html
+          get "https://www.2liga.at/de/news?page=2" news-2.html
+          get "https://www.2liga.at/de/news/artikel/blau-weiss-linz-holte-sich-fuehrung-in-2-liga-zurueck" art.html
           grep -ohE '/_next/static/chunks/[^"]+\.js' *.html | sort -u | while read j; do get "https://www.2liga.at$j" "js/$(basename "$j")" >/dev/null; done
           ls -la js | wc -l
           grep -ohE 'https?://[a-zA-Z0-9.-]+\.[a-z]{2,}[^"'"'"' ]{0,80}' js/*.js | grep -viE 'w3\.org|reactjs|nextjs|github|mozilla|schema\.org' | sort | uniq -c | sort -rn | head -60
