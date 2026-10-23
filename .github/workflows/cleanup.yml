@@ -1,9 +1,0 @@
-name: Aufräumen (temporär)
-on: workflow_dispatch
-permissions:
-  contents: write
-jobs:
-  cleanup:
-    runs-on: ubuntu-latest
-    steps:
-      - run: git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" --delete probe-data
