@@ -258,3 +258,9 @@ dialog::backdrop { background: rgb(0 0 0 / .5); }
 .ticker .min { font-weight: 700; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
 .ticker li.tk-score_change { background: var(--accent-soft); border-radius: 6px; }
 .ticker details summary { cursor: pointer; color: var(--accent); font-weight: 600; padding: 6px 0; }
+
+/* Tabellenzeilen führen zum Team-Spielplan */
+.standings tbody tr[data-team] { cursor: pointer; }
+.standings tbody tr[data-team]:hover td { background: var(--surface-2); }
+.standings tbody tr[data-team].fav:hover td { background: var(--fav); filter: brightness(0.97); }
+.standings tbody tr[data-team]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

@@ -348,7 +348,7 @@ function viewTable() {
   if (!rowsData.length) return emptyState('Keine Tabelle verfügbar.');
   const fav = favId();
   const form = (s) => [...(s || '')].map((c) => `<i class="f-${c}">${{ W: 'S', D: 'U', L: 'N' }[c] ?? c}</i>`).join('');
-  const rows = rowsData.map((r) => `<tr class="${r.team.id === fav ? 'fav' : ''}" data-team="${r.team.id}">
+  const rows = rowsData.map((r) => `<tr class="${r.team.id === fav ? 'fav' : ''}" data-team="${r.team.id}" tabindex="0" title="Spielplan von ${esc(r.team.name)}">
       <td class="rk">${r.rank}</td>
       <td class="tm"><div>${logo(r.team)}<span>${esc(r.team.name)}</span></div></td>
       <td>${r.all.played}</td>
@@ -662,14 +662,22 @@ function render() {
   window.scrollTo(0, scrollY);
 }
 
+// Tabelle → Spielplan-Tab mit vorausgewähltem Team
+function showTeamFixtures(teamId) {
+  S.ui.team = String(teamId);
+  store.set('fixtureTeam', S.ui.team);
+  location.hash = '#spielplan';
+}
+
 function bindEvents() {
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(); render(); } });
 
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-fixture],[data-round-step],[data-news-team],[data-open-settings],[data-reload],[data-close],[data-table]');
+    const t = e.target.closest('[data-fixture],[data-round-step],[data-news-team],[data-open-settings],[data-reload],[data-close],[data-table],[data-team]');
     if (!t) return;
     if (t.dataset.fixture) openFixture(Number(t.dataset.fixture));
+    else if (t.dataset.team) showTeamFixtures(t.dataset.team);
     else if (t.dataset.table) { S.ui.table = t.dataset.table; store.set('tableView', S.ui.table); render(); }
     else if (t.dataset.roundStep) {
       const all = rounds();
@@ -688,6 +696,12 @@ function bindEvents() {
     } else if ('openSettings' in t.dataset) openSettings();
     else if ('reload' in t.dataset) loadAll();
     else if ('close' in t.dataset) t.closest('dialog').close();
+  });
+
+  // Tabellenzeilen per Tastatur öffnen
+  document.addEventListener('keydown', (e) => {
+    const row = e.target.closest?.('tr[data-team]');
+    if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); showTeamFixtures(row.dataset.team); }
   });
 
   document.addEventListener('change', (e) => {
