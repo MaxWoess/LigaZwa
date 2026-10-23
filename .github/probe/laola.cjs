@@ -21,15 +21,15 @@ const fs = require('fs');
     } catch {}
     log.push(e);
   });
-  for (const u of ['https://matchcenter.laola1.at/Fussball/Oesterreich/2Liga/events?breadcrumbs=true']) {
+  for (const u of ['https://matchcenter.laola1.at/Fussball/Oesterreich/2Liga/match/72440722', 'https://matchcenter.laola1.at/Fussball/Oesterreich/2Liga/spielplan', 'https://matchcenter.laola1.at/Fussball/Oesterreich/2Liga/liveticker']) {
     await p.goto(u, { waitUntil: 'networkidle', timeout: 60000 }).catch((e) => log.push({ err: e.message }));
     await p.waitForTimeout(8000);
-    fs.writeFileSync('p/page.html', await p.content());
+    fs.writeFileSync('p/page-' + u.split('/').pop() + '.html', await p.content());
     await p.screenshot({ path: 'p/page.png', fullPage: true });
     // Links zu einzelnen Spielen
     const links = await p.$$eval('a', (as) => as.map((a) => a.href).filter((h) => /matchcenter\.laola1\.at/.test(h)));
-    fs.writeFileSync('p/links.txt', [...new Set(links)].join('\n'));
-    const ev = [...new Set(links)].find((l) => /\/event\/|\/match|\/spiel|\d{5,}/i.test(l) && !/events\?/.test(l));
+    fs.appendFileSync('p/links.txt', [...new Set(links)].join('\n') + '\n');
+    const ev = u.includes('spielplan') ? [...new Set(links)].filter((l) => /\/match\/\d+/.test(l))[0] : null;
     if (ev) {
       log.push({ visiting: ev });
       await p.goto(ev, { waitUntil: 'networkidle', timeout: 60000 }).catch((e) => log.push({ err: e.message }));
