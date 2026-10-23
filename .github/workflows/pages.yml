@@ -68,6 +68,17 @@ jobs:
           url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' wrangler.log | head -1)
           if [ -n "$url" ]; then echo "{\"liveUrl\":\"$url\"}" > site/data/config.json; fi
 
+      - name: Live-Server prüfen
+        if: github.event_name != 'schedule'
+        continue-on-error: true
+        run: |
+          url=$(node -e "try{console.log(require('./site/data/config.json').liveUrl||'')}catch{}")
+          [ -z "$url" ] && { echo "Kein Live-Server eingerichtet"; exit 0; }
+          echo "Live-Server: $url"
+          curl -sS -m 30 -H 'Origin: https://maxwoess.github.io' -D - "$url/laola/live" -o live.json | grep -iE '^(HTTP|access-control)'
+          node -e "const j=require('./live.json'); if(j.error) throw new Error(j.error); console.log(j.round, '–', j.list.length, 'Spiele'); for (const f of j.list) console.log(' ', f.scheduled, f.teams.home.name, '-', f.teams.away.name, f.fixture.status.short, f.goals.home ?? '-', ':', f.goals.away ?? '-', 'Ereignisse:', f.events.length)"
+          curl -sS -m 30 "$url/standings" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log('Tabelle:', j.rows?.length, 'Teams', j.error||'')})"
+
       - name: Live-URL aus Repository-Variable
         if: vars.LIVE_URL != ''
         run: echo '{"liveUrl":"${{ vars.LIVE_URL }}"}' > site/data/config.json
