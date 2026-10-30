@@ -3,6 +3,7 @@
 
 Der Server lauscht nur auf 127.0.0.1. Ein eingegebener API-Key bleibt im Speicher; mit "merken"
 landet er in ~/.atmogen/config.json (Klartext, nur für den eigenen Rechner gedacht).
+Lange Aufgaben (Scan, Planen, Rendern) laufen als Jobs im Hintergrund; das UI fragt den Stand ab.
 """
 
 from __future__ import annotations
@@ -13,18 +14,20 @@ import subprocess
 import sys
 import threading
 import traceback
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import core
+from library import LibraryIndex
 
 HERE = Path(__file__).resolve().parent
 CONFIG = Path.home() / ".atmogen" / "config.json"
 PORT = int(os.environ.get("ATMOGEN_PORT", "8765"))
 
-state = {"api_key": None, "sources": {}, "out_dirs": set()}
+state = {"api_key": None, "indexes": {}, "out_dirs": set(), "jobs": {}}
 lock = threading.Lock()
 
 
@@ -54,17 +57,101 @@ def api_key() -> tuple[str | None, str | None]:
     return None, None
 
 
-def source_entry(source: str, out: str, log) -> dict:
-    """Analysiert einen Quellordner einmal pro Sitzung (bzw. erneut, wenn sich das Ziel ändert)."""
-    key = (str(Path(source).resolve()), str(Path(out).resolve()))
+def get_index(root: str) -> LibraryIndex:
+    key = str(Path(root).expanduser().resolve()).lower()
     with lock:
-        entry = state["sources"].get(key)
-    if entry is None:
-        catalog, paths = core.load_source(Path(source), Path(out), log)
-        entry = {"catalog": catalog, "paths": paths}
-        with lock:
-            state["sources"][key] = entry
-    return entry
+        if key not in state["indexes"]:
+            state["indexes"][key] = LibraryIndex(root)
+        return state["indexes"][key]
+
+
+# --------------------------------------------------------------------------- Jobs
+
+
+def start_job(fn, data: dict) -> str:
+    jid = uuid.uuid4().hex[:10]
+    job = {"status": "running", "log": [], "progress": None, "result": None, "error": None}
+    state["jobs"][jid] = job
+
+    def log(msg: str) -> None:
+        job["log"].append(msg)
+
+    def progress(msg: str, done: int, total: int) -> None:
+        job["progress"] = {"msg": msg, "done": done, "total": total}
+
+    def run() -> None:
+        try:
+            job["result"] = fn(data, log, progress)
+            job["status"] = "done"
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            job["error"] = f"{type(e).__name__}: {e}"
+            job["status"] = "error"
+
+    threading.Thread(target=run, daemon=True).start()
+    return jid
+
+
+def job_scan(data: dict, log, progress) -> dict:
+    index = get_index(data["root"])
+    stats = index.scan(progress)
+    return stats | library_info(index)
+
+
+def job_plan(data: dict, log, progress) -> dict:
+    index = get_index(data["root"])
+    if not index.entries:
+        raise RuntimeError("Bibliothek ist noch nicht analysiert.")
+    folder = data.get("folder", "").strip().strip("/\\").replace("\\", "/")
+    scenes = [s for s in data.get("scenes", []) if s.strip()] or ["wenig los", "mittel", "voll"]
+    length = float(data.get("length", 120))
+    if data.get("use_llm", True):
+        key, src = api_key()
+        if src is None:
+            raise RuntimeError("Kein API-Key: bitte eingeben oder 'ohne Claude' wählen.")
+        from planner import plan_from_library
+
+        log(f"Claude stellt die Atmo aus {len(index.in_folder(folder))} Dateien zusammen …")
+        plan = plan_from_library(index, data.get("request", ""), scenes, length, folder, key, log)
+    else:
+        if not folder:
+            raise RuntimeError("Ohne Claude bitte einen Unterordner angeben, der nur die passenden Sounds enthält.")
+        plan = core.plan_heuristic(index.catalog(index.in_folder(folder)), scenes)
+    return {"plan": plan, "files": plan_files(index, plan)}
+
+
+def job_render(data: dict, log, progress) -> dict:
+    index = get_index(data["root"])
+    plan = data["plan"]
+    out = Path(data["out"]).expanduser().resolve()
+    with lock:
+        state["out_dirs"].add(out)
+    used = {f["id"] for f in plan["files"]}
+    results = core.render_all(
+        plan, index.paths(used), out,
+        length=float(data.get("length", 120)), sr=int(data.get("sr", 48000)), seed=int(data.get("seed", 1)),
+        loop=bool(data.get("loop", True)), aaf_mode=data.get("aaf_mode", "none"),
+        aaf_layout=data.get("aaf_layout", "dualmono"), reaper_lua=bool(data.get("reaper_lua")), log=log,
+    )
+    return {"results": results, "out": str(out), "files": plan_files(index, plan)}
+
+
+def plan_files(index: LibraryIndex, plan: dict) -> list[dict]:
+    out = []
+    for f in plan["files"]:
+        e = index.entries.get(f["id"])
+        if e:
+            out.append({"id": f["id"], "rel": e["rel"], "duration_s": e["duration_s"], "role": f["role"],
+                        "category": f["category"], "description": f.get("description", "")})
+    return out
+
+
+def library_info(index: LibraryIndex) -> dict:
+    if not index.entries:
+        return {"indexed": False}
+    return {"indexed": True, "files": len(index.entries), "scanned_at": index.scanned_at,
+            "hours": round(sum(e["duration_s"] for e in index.entries.values()) / 3600, 1),
+            "tree": index.folder_tree("", depth=2, max_lines=200)}
 
 
 # --------------------------------------------------------------------------- Handler
@@ -98,8 +185,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
             elif url.path == "/api/state":
-                _, src = api_key()
-                self._json({"key_source": src})
+                self._json({"key_source": api_key()[1]})
+            elif url.path == "/api/library":
+                self._json(library_info(get_index(q["root"])))
+            elif url.path == "/api/job":
+                job = state["jobs"].get(q.get("id", ""))
+                self._json(job if job else {"status": "error", "error": "Job unbekannt"})
             elif url.path == "/api/browse":
                 self._json(browse(q.get("path") or str(Path.home())))
             elif url.path == "/api/file":
@@ -111,15 +202,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urlparse(self.path)
-        logs: list[str] = []
         try:
             data = self._body()
             if url.path == "/api/key":
                 self._json(set_key(data))
-            elif url.path == "/api/plan":
-                self._json(plan(data, logs.append) | {"log": logs})
-            elif url.path == "/api/render":
-                self._json(render(data, logs.append) | {"log": logs})
+            elif url.path in ("/api/scan", "/api/plan", "/api/render"):
+                fn = {"/api/scan": job_scan, "/api/plan": job_plan, "/api/render": job_render}[url.path]
+                self._json({"job": start_job(fn, data)})
             elif url.path == "/api/reveal":
                 reveal(Path(data["path"]))
                 self._json({"ok": True})
@@ -127,17 +216,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "nicht gefunden"}, 404)
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
-            self._json({"error": f"{type(e).__name__}: {e}", "log": logs}, 500)
+            self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def _file(self, path: Path):
         path = path.resolve()
         if not any(path.is_relative_to(d) for d in state["out_dirs"]) or not path.is_file():
             self._json({"error": "Datei nicht freigegeben"}, 403)
             return
-        size = path.stat().st_size
         self.send_response(200)
         self.send_header("Content-Type", "audio/wav" if path.suffix == ".wav" else "application/octet-stream")
-        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Length", str(path.stat().st_size))
         self.end_headers()
         with open(path, "rb") as f:
             while chunk := f.read(1 << 20):
@@ -178,35 +266,6 @@ def set_key(data: dict) -> dict:
         cfg.pop("api_key")
         save_config(cfg)
     return {"key_source": api_key()[1]}
-
-
-def plan(data: dict, log) -> dict:
-    entry = source_entry(data["source"], data["out"], log)
-    scenes = [s for s in data.get("scenes", []) if s.strip()] or ["wenig los", "mittel", "voll"]
-    if data.get("use_llm", True):
-        key, src = api_key()
-        if src is None:
-            raise RuntimeError("Kein API-Key: bitte eingeben oder 'ohne Claude' wählen.")
-        log(f"Claude plant {len(scenes)} Szenen ...")
-        p = core.plan_with_claude(entry["catalog"], scenes, float(data.get("length", 120)),
-                                  data.get("instructions", ""), key)
-    else:
-        p = core.plan_heuristic(entry["catalog"], scenes)
-    return {"plan": p, "catalog": entry["catalog"]}
-
-
-def render(data: dict, log) -> dict:
-    entry = source_entry(data["source"], data["out"], log)
-    out = Path(data["out"]).resolve()
-    with lock:
-        state["out_dirs"].add(out)
-    results = core.render_all(
-        data["plan"], entry["paths"], out,
-        length=float(data.get("length", 120)), sr=int(data.get("sr", 48000)), seed=int(data.get("seed", 1)),
-        loop=bool(data.get("loop", True)), aaf_mode=data.get("aaf_mode", "none"),
-        aaf_layout=data.get("aaf_layout", "dualmono"), reaper_lua=bool(data.get("reaper_lua")), log=log,
-    )
-    return {"results": results, "out": str(out)}
 
 
 def reveal(path: Path) -> None:

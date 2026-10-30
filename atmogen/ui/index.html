@@ -65,6 +65,12 @@
   .preview input[type=range] { width: 100%; accent-color: var(--accent); }
   .ticks { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
   .empty { color: var(--muted); font-size: 14px; }
+  .progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 8px; display: none; }
+  .progress div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  #log { font-size: 13px; color: var(--muted); max-height: 220px; overflow: auto; margin-top: 8px; padding-left: 18px; }
+  #log:empty { display: none; }
+  pre.tree { font: 12px/1.45 ui-monospace, Consolas, monospace; max-height: 300px; overflow: auto; margin: 6px 0 0; color: var(--muted); }
+  textarea.big { min-height: 110px; font-size: 15px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margin: 6px 0; }
   dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text);
            width: min(560px, 92vw); padding: 16px; }
@@ -78,29 +84,34 @@
 <body>
 <header>
   <h1>atmogen</h1>
-  <p>Aus Einzelsounds werden Atmo-Szenen unterschiedlicher Dichte: nahtlos loopbar, zum Überblenden gebaut, als WAV und AAF.</p>
+  <p>Beschreibe eine Atmo, Claude sucht die passenden Sounds aus deiner Bibliothek und baut Szenen unterschiedlicher Dichte: nahtlos loopbar, zum Überblenden gebaut, als WAV und AAF.</p>
 </header>
 
 <main>
   <section>
     <div class="card">
-      <h2>Quelle &amp; Ziel</h2>
-      <label for="source">Ordner mit den Sounds</label>
-      <div class="row"><input type="text" id="source" placeholder="z. B. D:\Sounds\Restaurant"><button class="fit" data-browse="source">Durchsuchen</button></div>
-      <label for="out">Ausgabeordner</label>
-      <div class="row"><input type="text" id="out" placeholder="wird sonst …\atmogen_out"><button class="fit" data-browse="out">Durchsuchen</button></div>
+      <h2>Bibliothek</h2>
+      <label for="root">Ordner der Sound-Bibliothek (inkl. Unterordner)</label>
+      <div class="row"><input type="text" id="root" placeholder="z. B. D:\Sounds"><button class="fit" data-browse="root">Durchsuchen</button></div>
+      <div class="actions" style="margin-top:10px"><button id="scanBtn">Analysieren / aktualisieren</button></div>
+      <div class="hint" id="libState">Noch nicht analysiert.</div>
+      <div class="progress" id="scanBar"><div></div></div>
+      <details><summary>Ordnerübersicht</summary><pre class="tree" id="libTree"></pre></details>
     </div>
 
     <div class="card">
-      <h2>Szenen</h2>
+      <h2>Welche Atmo?</h2>
+      <label for="request">Beschreibung für Claude</label>
+      <textarea id="request" class="big" placeholder="z. B. Gehobenes Restaurant am Abend: gedämpfte Gespräche, leises Besteck und Gläser, im Hintergrund etwas Küche. Kein Lachen, keine Musik."></textarea>
+      <label>Szenen (Zustände für deinen Regler)</label>
       <div id="scenes"></div>
       <button id="addScene">+ Szene</button>
       <div class="row" style="margin-top:6px">
         <div><label for="length">Länge (Sekunden)</label><input type="number" id="length" value="120" min="10" step="5"></div>
         <div><label for="seed">Variante (Seed)</label><input type="number" id="seed" value="1" min="1"></div>
       </div>
-      <label for="instructions">Wie soll die Session klingen? (Anweisungen an Claude)</label>
-      <textarea id="instructions" placeholder="z. B. Gehobenes Restaurant am Abend, gedämpfte Gespräche, Besteck eher leise, kaum Lachen. In der vollen Szene ruhig ein Tisch mit Gruppe links."></textarea>
+      <label for="folder">Nur diesen Unterordner verwenden (optional)</label>
+      <input type="text" id="folder" placeholder="z. B. Taverns/Restaurant  (leer = ganze Bibliothek)">
     </div>
 
     <div class="card">
@@ -109,11 +120,13 @@
       <div class="row"><input type="password" id="apikey" placeholder="sk-ant-…" autocomplete="off"><button class="fit" id="saveKey">Übernehmen</button></div>
       <label class="check"><input type="checkbox" id="remember"> auf diesem Rechner merken</label>
       <div class="hint" id="keyState"></div>
-      <label class="check"><input type="checkbox" id="noLlm"> ohne Claude planen (einfache Heuristik nach Dateinamen)</label>
+      <label class="check"><input type="checkbox" id="noLlm"> ohne Claude (Heuristik nach Dateinamen, braucht Unterordner)</label>
     </div>
 
     <div class="card">
       <h2>Export</h2>
+      <label for="out">Ausgabeordner</label>
+      <div class="row"><input type="text" id="out" placeholder="z. B. D:\Atmos\Restaurant"><button class="fit" data-browse="out">Durchsuchen</button></div>
       <label class="check"><input type="checkbox" id="loop" checked> nahtlos loopbar</label>
       <div class="row">
         <div><label for="aafMode">AAF</label>
@@ -136,12 +149,13 @@
   <section>
     <div class="card">
       <div class="actions">
-        <button class="primary" id="planBtn">1 · Analysieren &amp; planen</button>
+        <button class="primary" id="planBtn">1 · Atmo zusammenstellen</button>
         <button class="primary" id="renderBtn" disabled>2 · Rendern</button>
         <button id="variantBtn" disabled title="Gleicher Plan, neue Zufallsverteilung">Neue Variante</button>
         <button id="revealBtn" disabled>Ausgabe öffnen</button>
       </div>
       <div id="status" style="margin-top:10px"></div>
+      <ol id="log"></ol>
     </div>
 
     <div class="card">
@@ -150,8 +164,8 @@
     </div>
 
     <div class="card">
-      <h2>Dateien &amp; Rollen</h2>
-      <div id="catalog"><div class="empty">Nach dem Planen siehst du hier, wie jede Datei eingesetzt wird.</div></div>
+      <h2>Ausgewählte Sounds</h2>
+      <div id="catalog"><div class="empty">Nach dem Zusammenstellen siehst du hier, welche Dateien Claude gewählt hat und wofür.</div></div>
       <details>
         <summary>Plan bearbeiten (JSON)</summary>
         <textarea id="planJson" class="code" spellcheck="false" placeholder="Plan erscheint nach Schritt 1"></textarea>
@@ -170,19 +184,19 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["source", "out", "length", "seed", "instructions", "noLlm", "loop", "aafMode", "aafLayout", "reaperLua", "remember"];
-let scenes = ["Restaurant, wenig los", "Restaurant, mittel", "Restaurant, voll"];
-let catalog = null, lastOut = null, results = [];
+const FIELDS = ["root", "out", "folder", "request", "length", "seed", "noLlm", "loop", "aafMode", "aafLayout", "reaperLua", "remember"];
+let scenes = ["wenig los", "mittel", "voll"];
+let lastOut = null, results = [], planFiles = [];
 
 // ---------------------------------------------------------------- Formular merken (nur lokal im Browser)
 function saveForm() {
   const data = { scenes };
   for (const f of FIELDS) { const el = $(f); data[f] = el.type === "checkbox" ? el.checked : el.value; }
-  try { localStorage.setItem("atmogen", JSON.stringify(data)); } catch {}
+  try { localStorage.setItem("atmogen2", JSON.stringify(data)); } catch {}
 }
 function loadForm() {
   let data = null;
-  try { data = JSON.parse(localStorage.getItem("atmogen")); } catch {}
+  try { data = JSON.parse(localStorage.getItem("atmogen2")); } catch {}
   if (!data) return;
   if (Array.isArray(data.scenes) && data.scenes.length) scenes = data.scenes;
   for (const f of FIELDS) if (f in data) { const el = $(f); if (el.type === "checkbox") el.checked = data[f]; else el.value = data[f]; }
@@ -195,7 +209,7 @@ function renderScenes() {
     const row = document.createElement("div"); row.className = "scene-row";
     const n = document.createElement("span"); n.textContent = i + 1;
     const inp = document.createElement("input"); inp.type = "text"; inp.value = s;
-    inp.placeholder = "Beschreibung der Szene";
+    inp.placeholder = "z. B. wenig los";
     inp.oninput = () => { scenes[i] = inp.value; saveForm(); };
     const del = document.createElement("button"); del.textContent = "✕"; del.title = "Szene entfernen";
     del.disabled = scenes.length <= 1;
@@ -205,27 +219,65 @@ function renderScenes() {
 }
 $("addScene").onclick = () => { scenes.push(""); renderScenes(); saveForm(); };
 
-// ---------------------------------------------------------------- Server-Aufrufe
+// ---------------------------------------------------------------- Server und Jobs
 async function api(path, body) {
   const res = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
   const data = await res.json();
-  if (!res.ok) { const e = new Error(data.error || res.statusText); e.log = data.log; throw e; }
+  if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
+}
+async function runJob(path, body, bar) {
+  const { job } = await api(path, body);
+  $("log").textContent = "";
+  let shown = 0;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 600));
+    const j = await api("/api/job?id=" + job);
+    for (; shown < j.log.length; shown++) {
+      const li = document.createElement("li"); li.textContent = j.log[shown]; $("log").append(li);
+      $("log").scrollTop = $("log").scrollHeight;
+    }
+    if (j.progress) {
+      status(j.progress.msg, "busy");
+      if (bar && j.progress.total) { bar.style.display = "block"; bar.firstElementChild.style.width = (100 * j.progress.done / j.progress.total) + "%"; }
+    }
+    if (j.status === "done") { if (bar) bar.style.display = "none"; return j.result; }
+    if (j.status === "error") { if (bar) bar.style.display = "none"; throw new Error(j.error); }
+  }
 }
 function status(msg, kind) {
   const el = $("status"); el.className = kind === "err" ? "err" : ""; el.textContent = "";
   if (kind === "busy") { const s = document.createElement("span"); s.className = "spinner"; el.append(s); }
   el.append(document.createTextNode(msg));
 }
-function busy(on) { for (const id of ["planBtn", "renderBtn", "variantBtn"]) $(id).disabled = on || (id !== "planBtn" && !$("planJson").value.trim()); }
-
-function outDir() {
-  const out = $("out").value.trim();
-  if (out) return out;
-  const src = $("source").value.trim().replace(/[\\/]+$/, "");
-  const sep = src.includes("\\") ? "\\" : "/";
-  return src + sep + "atmogen_out";
+function busy(on) {
+  for (const id of ["planBtn", "renderBtn", "variantBtn", "scanBtn"])
+    $(id).disabled = on || ((id === "renderBtn" || id === "variantBtn") && !$("planJson").value.trim());
 }
+
+// ---------------------------------------------------------------- Bibliothek
+function showLibrary(info) {
+  if (!info.indexed) { $("libState").textContent = "Noch nicht analysiert."; $("libTree").textContent = ""; return; }
+  const when = info.scanned_at ? new Date(info.scanned_at * 1000).toLocaleString() : "";
+  $("libState").textContent = `${info.files} Dateien · ${info.hours} h Audio · analysiert ${when}`;
+  $("libTree").textContent = info.tree;
+}
+async function refreshLibrary() {
+  const root = $("root").value.trim();
+  if (!root) return;
+  try { showLibrary(await api("/api/library?root=" + encodeURIComponent(root))); } catch {}
+}
+$("root").addEventListener("change", refreshLibrary);
+$("scanBtn").onclick = async () => {
+  if (!$("root").value.trim()) { status("Bitte den Ordner der Bibliothek angeben.", "err"); return; }
+  busy(true); status("Analysiere Bibliothek …", "busy");
+  try {
+    const r = await runJob("/api/scan", { root: $("root").value.trim() }, $("scanBar"));
+    showLibrary(r);
+    status(`Bibliothek bereit: ${r.files} Dateien (${r.analyzed} neu analysiert${r.unreadable ? `, ${r.unreadable} nicht lesbar` : ""}).`);
+  } catch (e) { status(e.message, "err"); }
+  busy(false);
+};
 
 // ---------------------------------------------------------------- API-Key
 async function refreshKeyState(src) {
@@ -237,19 +289,18 @@ $("saveKey").onclick = async () => {
   $("apikey").value = ""; saveForm(); refreshKeyState(r.key_source);
 };
 
-// ---------------------------------------------------------------- Planen & Rendern
+// ---------------------------------------------------------------- Zusammenstellen & Rendern
 $("planBtn").onclick = async () => {
-  if (!$("source").value.trim()) { status("Bitte zuerst den Ordner mit den Sounds angeben.", "err"); return; }
-  busy(true); status($("noLlm").checked ? "Analysiere und plane …" : "Analysiere, Claude plant die Szenen (kann eine Minute dauern) …", "busy");
+  if (!$("root").value.trim()) { status("Bitte zuerst die Bibliothek angeben und analysieren.", "err"); return; }
+  busy(true); status($("noLlm").checked ? "Plane …" : "Claude sucht passende Sounds (das kann ein paar Minuten dauern) …", "busy");
   try {
-    const r = await api("/api/plan", {
-      source: $("source").value.trim(), out: outDir(), scenes, length: +$("length").value,
-      instructions: $("instructions").value, use_llm: !$("noLlm").checked,
+    const r = await runJob("/api/plan", {
+      root: $("root").value.trim(), folder: $("folder").value.trim(), request: $("request").value, scenes,
+      length: +$("length").value, use_llm: !$("noLlm").checked,
     });
-    catalog = r.catalog;
     $("planJson").value = JSON.stringify(r.plan, null, 1);
-    showCatalog(r.plan);
-    status(`Plan steht: ${r.plan.scenes.length} Szenen aus ${catalog.length} Dateien. Jetzt rendern.`);
+    planFiles = r.files; showFiles();
+    status(`Plan steht: ${r.plan.scenes.length} Szenen aus ${r.files.length} Sounds. Jetzt rendern.`);
   } catch (e) { status(e.message, "err"); }
   busy(false);
 };
@@ -257,15 +308,16 @@ $("planBtn").onclick = async () => {
 async function doRender() {
   let plan;
   try { plan = JSON.parse($("planJson").value); } catch (e) { status("Plan-JSON ist ungültig: " + e.message, "err"); return; }
+  if (!$("out").value.trim()) { status("Bitte einen Ausgabeordner angeben.", "err"); return; }
   busy(true); status("Rendere Szenen und Session-Export …", "busy");
   stopPreview();
   try {
-    const r = await api("/api/render", {
-      source: $("source").value.trim(), out: outDir(), plan, length: +$("length").value, seed: +$("seed").value,
+    const r = await runJob("/api/render", {
+      root: $("root").value.trim(), out: $("out").value.trim(), plan, length: +$("length").value, seed: +$("seed").value,
       loop: $("loop").checked, aaf_mode: $("aafMode").value, aaf_layout: $("aafLayout").value, reaper_lua: $("reaperLua").checked,
     });
     results = r.results; lastOut = r.out; $("revealBtn").disabled = false;
-    showCatalog(plan); await showResults();
+    planFiles = r.files; showFiles(); await showResults();
     status(`Fertig: ${results.length} Szenen in ${r.out}`);
   } catch (e) { status(e.message, "err"); }
   busy(false);
@@ -276,19 +328,18 @@ $("revealBtn").onclick = () => lastOut && api("/api/reveal", { path: lastOut }).
 
 // ---------------------------------------------------------------- Anzeige
 const ROLE_LABEL = { bed: "Bed", layer: "Layer", event: "Event", skip: "Skip" };
-function showCatalog(plan) {
-  if (!catalog) return;
-  const roles = Object.fromEntries(plan.files.map((f) => [f.id, f]));
+const ROLE_ORDER = { bed: 0, layer: 1, event: 2, skip: 3 };
+function showFiles() {
   const t = document.createElement("table");
   t.innerHTML = "<tr><th>Datei</th><th>Rolle</th><th>Kategorie</th><th class='num'>Länge</th></tr>";
-  for (const c of catalog) {
-    const f = roles[c.id] || { role: "skip", category: "" };
+  const files = [...planFiles].sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.category.localeCompare(b.category));
+  for (const f of files) {
     const tr = document.createElement("tr");
-    const td1 = document.createElement("td"); td1.textContent = c.file; td1.title = f.description || "";
+    const td1 = document.createElement("td"); td1.textContent = f.rel; td1.title = f.description || "";
     const td2 = document.createElement("td"); const b = document.createElement("span");
     b.className = "badge"; b.style.background = `var(--${f.role})`; b.textContent = ROLE_LABEL[f.role] || f.role; td2.append(b);
     const td3 = document.createElement("td"); td3.textContent = f.category;
-    const td4 = document.createElement("td"); td4.className = "num"; td4.textContent = c.duration_s.toFixed(1) + " s";
+    const td4 = document.createElement("td"); td4.className = "num"; td4.textContent = f.duration_s.toFixed(1) + " s";
     tr.append(td1, td2, td3, td4); t.append(tr);
   }
   $("catalog").textContent = ""; $("catalog").append(t);
@@ -296,7 +347,6 @@ function showCatalog(plan) {
 
 async function showResults() {
   const box = $("results"); box.textContent = "";
-  // Überblend-Vorschau
   const pv = document.createElement("div"); pv.className = "preview";
   pv.innerHTML = `<div class="row" style="margin-bottom:8px"><strong style="flex:1">Überblend-Vorschau</strong>
     <button class="fit" id="playBtn">▶ Abspielen</button></div>
@@ -383,13 +433,16 @@ async function openDir(path) {
 }
 document.querySelectorAll("[data-browse]").forEach((b) => b.onclick = () => {
   dirTarget = b.dataset.browse;
-  openDir($(dirTarget).value.trim() || $("source").value.trim()).then(() => $("dirDialog").showModal());
+  openDir($(dirTarget).value.trim() || $("root").value.trim()).then(() => $("dirDialog").showModal());
 });
 $("dirCancel").onclick = () => $("dirDialog").close();
-$("dirChoose").onclick = () => { $(dirTarget).value = dirCurrent; $("dirDialog").close(); saveForm(); };
+$("dirChoose").onclick = () => {
+  $(dirTarget).value = dirCurrent; $("dirDialog").close(); saveForm();
+  if (dirTarget === "root") refreshLibrary();
+};
 
 // ---------------------------------------------------------------- Start
-loadForm(); renderScenes(); refreshKeyState();
+loadForm(); renderScenes(); refreshKeyState(); refreshLibrary();
 for (const f of FIELDS) $(f).addEventListener("change", saveForm);
 </script>
 </body>

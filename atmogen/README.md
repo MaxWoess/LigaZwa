@@ -1,18 +1,22 @@
 # atmogen
 
-Baut aus einem Ordner mit Einzelsounds (Murmeln, Gläser, Teller, Roomtone …) mehrere Atmo-Szenen
-unterschiedlicher Dichte. Gedacht für ein interaktives System, in dem ein Regler zwischen den Szenen
-überblendet (z. B. „Anzahl Menschen im Raum“).
+Du beschreibst eine Atmo („gehobenes Restaurant am Abend, leises Besteck, kein Lachen“), und Claude
+sucht die passenden Sounds aus deiner ganzen Bibliothek. atmogen baut daraus mehrere Szenen
+unterschiedlicher Dichte. Gedacht ist das für ein interaktives System, in dem ein Regler zwischen den
+Szenen überblendet (z. B. „Anzahl Menschen im Raum“).
 
+- **Bibliothek.** Einmal den ganzen Ordner inklusive Unterordner analysieren lassen. Das läuft
+  parallel, der Index liegt in `~/.atmogen/index/`, beim nächsten Mal kommen nur neue Dateien dazu.
+  Dateien ohne Endung (z. B. aus einem Unity-Cache) werden am Dateikopf erkannt.
+- **Claude sucht selbst.** Claude bekommt die Ordnerübersicht und Werkzeuge zum Durchsuchen
+  (Name, Ordner, Länge, durchgehend oder vereinzelt). Es wählt Beds, Layer und Event-Varianten aus
+  und plant jede Szene. Die Suchschritte erscheinen live im UI.
 - **Gleich lang und nahtlos loopbar.** Layer werden zyklisch gecrossfadet, Events laufen über die
   Loop-Grenze weiter.
 - **Überblend-fest.** Beds und Layer nutzen in jeder Szene dieselben Segmente und Panoramapositionen.
-  Die Szenen unterscheiden sich in Anzahl, Pegel und Event-Dichte.
-- **Claude plant.** Claude ordnet jede Datei ein (bed / layer / event / skip) und entwirft pro Szene
-  die Mischung. Die Platzierung selbst ist deterministisch (Seed), ein neuer Seed ergibt eine neue Variante.
 - **Export.** Stereo-WAV (24 bit) pro Szene, dazu ein AAF (verlinkt oder eingebettet, Mono-Paare oder
-  Stereo). Optional gibt es einen REAPER-Bauplan für `BuildScene.lua`. Die Session-Clips sind gebacken
-  und klingen exakt wie die WAV.
+  Stereo). Optional gibt es einen REAPER-Bauplan für `BuildScene.lua`. Die Session-Clips sind
+  gebacken und klingen exakt wie die WAV.
 
 ## Start
 
@@ -21,26 +25,30 @@ pip install -r requirements.txt
 python ui.py            # öffnet http://127.0.0.1:8765 im Browser
 ```
 
-Im UI gibst du Quellordner, Szenen, Länge und deine Anweisungen an Claude ein, dazu den API-Key.
-Ohne Key plant eine einfache Heuristik nach Dateinamen. Die Überblend-Vorschau spielt alle Szenen
-synchron ab und simuliert den Regler.
+1. Bibliotheksordner wählen und „Analysieren“ klicken (nur beim ersten Mal und nach Änderungen nötig).
+2. Atmo beschreiben, Szenen und Länge festlegen, API-Key eintragen. Optional lässt sich die Suche auf
+   einen Unterordner beschränken.
+3. „Atmo zusammenstellen“ klicken: Claude sucht und plant. „Rendern“ erzeugt WAVs und AAF. Die
+   Überblend-Vorschau simuliert deinen Regler.
+
+`plan.json` im Ausgabeordner lässt sich bearbeiten (UI: „Plan bearbeiten“) und ohne erneute
+Claude-Anfrage neu rendern. „Neue Variante“ verteilt die Events neu.
 
 Kommandozeile:
 
 ```bash
-python atmogen.py ./sounds -o ./out --length 120 --aaf linked \
-  --scene "Restaurant, wenig los" --scene "Restaurant, mittel" --scene "Restaurant, voll" \
-  --instructions "gehobenes Restaurant, Besteck leise, kaum Lachen"
+python atmogen.py scan D:/Sounds
+python atmogen.py make D:/Sounds "Gehobenes Restaurant am Abend, kein Lachen" -o out --aaf linked \
+  --scene "wenig los" --scene "mittel" --scene "voll"
 ```
-
-`out/plan.json` lässt sich von Hand anpassen und mit `--plan out/plan.json` (oder im UI unter
-„Plan bearbeiten“) neu rendern, ohne Claude erneut zu fragen.
 
 ## Dateien
 
 | Datei | Zweck |
 |---|---|
-| `core.py` | Analyse, Planung, Platzierung, Render |
+| `library.py` | Bibliotheks-Index: Scan, Messwerte, Suche |
+| `planner.py` | Claude durchsucht die Bibliothek und plant die Szenen |
+| `core.py` | Plan-Schema, Heuristik, Platzierung, Render |
 | `aafexport.py` | AAF-Export (pyaaf2) |
 | `ui.py`, `ui/index.html` | lokale Weboberfläche |
 | `atmogen.py` | Kommandozeile |

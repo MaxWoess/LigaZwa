@@ -1,4 +1,4 @@
-"""atmogen core: Analyse, Planung (Claude oder Heuristik), Platzierung, Render und Export.
+"""atmogen core: Plan-Schema, Heuristik, Platzierung, Render und Export.
 
 Datenmodell: Eine Szene besteht aus Clips (Bed-/Layer-Segmente und Events). Jeder Clip wird
 "gebacken" (Tonhöhe, Gain, Pan, Fades eingerechnet). Dieselben gebackenen Clips landen im
@@ -18,7 +18,6 @@ import json
 import math
 import re
 import shutil
-import sys
 from pathlib import Path
 from typing import Callable
 
@@ -53,25 +52,6 @@ def sniff_ext(path: Path) -> str | None:
     return None
 
 
-def collect_files(src: Path, media_dir: Path) -> list[Path]:
-    """Alle Audiodateien; solche ohne passende Endung werden mit Endung nach media_dir kopiert."""
-    out = []
-    for p in sorted(src.rglob("*")):
-        if not p.is_file():
-            continue
-        if p.suffix.lower() in AUDIO_EXT:
-            out.append(p)
-            continue
-        ext = sniff_ext(p)
-        if ext:
-            media_dir.mkdir(parents=True, exist_ok=True)
-            dst = media_dir / (p.name + ext)
-            if not dst.exists():
-                shutil.copyfile(p, dst)
-            out.append(dst)
-    return out
-
-
 def load_stereo(path: Path) -> tuple[np.ndarray, int]:
     x, sr = sf.read(str(path), dtype="float32", always_2d=True)
     if x.shape[1] == 1:
@@ -81,49 +61,6 @@ def load_stereo(path: Path) -> tuple[np.ndarray, int]:
 
 def db(v: float) -> float:
     return 20 * math.log10(max(v, 1e-9))
-
-
-def analyze(path: Path, rel: str, idx: int, log: Log = print) -> dict | None:
-    try:
-        x, sr = load_stereo(path)
-    except Exception as e:  # noqa: BLE001 - unlesbare Datei überspringen
-        log(f"übersprungen ({e}): {rel}")
-        return None
-    mono = x.mean(axis=1)
-    win = max(1, int(sr * 0.1))
-    n = len(mono) // win
-    if n == 0:
-        return None
-    frames = mono[: n * win].reshape(n, win)
-    st_rms = 10 * np.log10(np.maximum(np.mean(frames**2, axis=1), 1e-18))
-    peak = float(np.max(np.abs(x)))
-    rms = float(np.sqrt(np.mean(mono**2)))
-    return {
-        "id": idx,
-        "file": rel,
-        "duration_s": round(len(x) / sr, 2),
-        "channels": sf.info(str(path)).channels,
-        "samplerate": sr,
-        "rms_db": round(db(rms), 1),
-        "peak_db": round(db(peak), 1),
-        "crest_db": round(db(peak) - db(rms), 1),
-        "dynamics_db": round(float(np.std(st_rms)), 1),
-        # Anteil der 100-ms-Fenster, die höchstens 20 dB unter dem lautesten liegen:
-        # nahe 1 = durchgehender Sound, klein = einzelnes Ereignis mit Stille drumherum
-        "active_ratio": round(float(np.mean(st_rms > st_rms.max() - 20)), 2),
-    }
-
-
-def scan_source(source: Path, work: Path, log: Log = print) -> tuple[list[dict], dict[int, Path]]:
-    files = collect_files(source, work / "media")
-    catalog, paths = [], {}
-    for p in files:
-        rel = str(p.relative_to(source)) if p.is_relative_to(source) else p.name
-        a = analyze(p, rel, len(catalog), log)
-        if a:
-            catalog.append(a)
-            paths[a["id"]] = p
-    return catalog, paths
 
 
 # --------------------------------------------------------------------------- Planung mit Claude
@@ -185,37 +122,6 @@ Auffällige Ereignisse (Husten, Lachen, Scherben) sparsam einsetzen, sonst erken
 
 Gib genau eine Szene pro gewünschter Szene in derselben Reihenfolge zurück. slug: kurzer
 Dateiname in Kleinbuchstaben ohne Leerzeichen. notes: ein Satz zu deiner Idee für die Szene."""
-
-
-def plan_with_claude(catalog: list[dict], scenes: list[str], length: float, instructions: str = "",
-                     api_key: str | None = None) -> dict:
-    import anthropic
-
-    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-    user = (
-        f"Länge jeder Szene: {length:.0f} Sekunden.\n"
-        "Szenen (in dieser Reihenfolge):\n" + "\n".join(f"- {s}" for s in scenes)
-    )
-    if instructions.strip():
-        user += "\n\nWünsche zum Klang der Session:\n" + instructions.strip()
-    user += "\n\nDateien (Messwerte vom Analysator):\n" + json.dumps(catalog, ensure_ascii=False, indent=1)
-
-    with client.beta.messages.stream(
-        model=MODEL,
-        max_tokens=32000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": PLAN_SCHEMA}},
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user}],
-    ) as stream:
-        response = stream.get_final_message()
-    if response.stop_reason == "refusal":
-        raise RuntimeError("Claude hat die Anfrage abgelehnt; ohne Claude (Heuristik) geht es trotzdem.")
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError("Antwort abgeschnitten (max_tokens); weniger Dateien oder Szenen probieren.")
-    text = next(b.text for b in response.content if b.type == "text")
-    return json.loads(text)
 
 
 # --------------------------------------------------------------------------- Heuristik ohne LLM
@@ -549,16 +455,3 @@ def write_reaper_plan(path: Path, name: str, placed: list, length: float, sr: in
         lines += [f"    {{ name = {lua_str(track)}, items = {{", *items, "    } },"]
     lines += ["  },", "}", ""]
     path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def load_source(source: Path, work: Path, log: Log = print) -> tuple[list[dict], dict[int, Path]]:
-    catalog, paths = scan_source(source, work, log)
-    if not catalog:
-        raise RuntimeError("Keine lesbaren Audiodateien gefunden.")
-    work.mkdir(parents=True, exist_ok=True)
-    (work / "catalog.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=1), encoding="utf-8")
-    return catalog, paths
-
-
-def log_stderr(msg: str) -> None:
-    print(msg, file=sys.stderr)
