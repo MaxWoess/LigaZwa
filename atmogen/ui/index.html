@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>atmogen</title>
+<style>
+  :root {
+    --bg: #f4f3ef; --card: #ffffff; --text: #1d1d1b; --muted: #6b6a66; --line: #e2e0da;
+    --accent: #2f6f5e; --accent-text: #ffffff; --soft: #e8f0ed; --warn: #a3471f; --input: #fbfaf7;
+    --bed: #6b7fa8; --layer: #2f6f5e; --event: #b5782b; --skip: #999;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161716; --card: #202221; --text: #ecebe7; --muted: #9a9993; --line: #333533;
+      --accent: #5fb39a; --accent-text: #0e1513; --soft: #23302c; --warn: #e3875d; --input: #191a19;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 22px 24px 6px; max-width: 1180px; margin: 0 auto; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: .3px; }
+  header p { margin: 2px 0 0; color: var(--muted); }
+  main { max-width: 1180px; margin: 0 auto; padding: 12px 24px 60px;
+         display: grid; grid-template-columns: 420px 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=password], input[type=number], textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--input); color: var(--text); font: inherit; }
+  textarea { resize: vertical; min-height: 80px; }
+  textarea.code { font: 12px/1.4 ui-monospace, Consolas, monospace; min-height: 260px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  .row > .fit { flex: 0 0 auto; }
+  .check { display: flex; gap: 8px; align-items: center; margin: 10px 0 0; color: var(--text); font-size: 14px; }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--card);
+           color: var(--text); padding: 8px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  .scene-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .scene-row span { width: 22px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .scene-row button { padding: 6px 10px; }
+  #status { min-height: 22px; font-size: 14px; color: var(--muted); }
+  #status.err { color: var(--warn); }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line);
+             border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin-right: 6px; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .badge { display: inline-block; font-size: 11.5px; padding: 1px 8px; border-radius: 99px; color: #fff; }
+  .scene { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .scene h3 { margin: 0 0 4px; font-size: 15px; }
+  .scene .meta { color: var(--muted); font-size: 13px; }
+  .scene .files { font-size: 12.5px; margin-top: 6px; word-break: break-all; color: var(--muted); }
+  .preview { background: var(--soft); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .preview input[type=range] { width: 100%; accent-color: var(--accent); }
+  .ticks { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
+  .empty { color: var(--muted); font-size: 14px; }
+  .progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 8px; display: none; }
+  .progress div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  #log { font-size: 13px; color: var(--muted); max-height: 220px; overflow: auto; margin-top: 8px; padding-left: 18px; }
+  #log:empty { display: none; }
+  pre.tree { font: 12px/1.45 ui-monospace, Consolas, monospace; max-height: 300px; overflow: auto; margin: 6px 0 0; color: var(--muted); }
+  textarea.big { min-height: 110px; font-size: 15px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margin: 6px 0; }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text);
+           width: min(560px, 92vw); padding: 16px; }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  #dirList { max-height: 50vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; }
+  #dirList div { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+  #dirList div:hover { background: var(--soft); }
+  #dirPath { font: 12.5px ui-monospace, Consolas, monospace; word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+  <h1>atmogen</h1>
+  <p>Beschreibe eine Atmo, Claude sucht die passenden Sounds aus deiner Bibliothek und baut Szenen unterschiedlicher Dichte: nahtlos loopbar, zum Überblenden gebaut, als WAV und AAF.</p>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>Bibliothek</h2>
+      <label for="root">Ordner der Sound-Bibliothek (inkl. Unterordner)</label>
+      <div class="row"><input type="text" id="root" placeholder="z. B. D:\Sounds"><button class="fit" data-browse="root">Durchsuchen</button></div>
+      <label class="check"><input type="checkbox" id="useClap"> Inhaltsanalyse mit CLAP (Suche nach Klang; beim ersten Mal deutlich langsamer)</label>
+      <div class="actions" style="margin-top:10px"><button id="scanBtn">Analysieren / aktualisieren</button></div>
+      <div class="hint" id="libState">Noch nicht analysiert.</div>
+      <div class="progress" id="scanBar"><div></div></div>
+      <details><summary>Ordnerübersicht</summary><pre class="tree" id="libTree"></pre></details>
+    </div>
+
+    <div class="card">
+      <h2>Welche Atmo?</h2>
+      <label for="request">Beschreibung für Claude</label>
+      <textarea id="request" class="big" placeholder="z. B. Gehobenes Restaurant am Abend: gedämpfte Gespräche, leises Besteck und Gläser, im Hintergrund etwas Küche. Kein Lachen, keine Musik."></textarea>
+      <label>Szenen (Zustände für deinen Regler)</label>
+      <div id="scenes"></div>
+      <button id="addScene">+ Szene</button>
+      <div class="row" style="margin-top:6px">
+        <div><label for="length">Länge (Sekunden)</label><input type="number" id="length" value="120" min="10" step="5"></div>
+        <div><label for="seed">Variante (Seed)</label><input type="number" id="seed" value="1" min="1"></div>
+      </div>
+      <label for="folder">Nur diesen Unterordner verwenden (optional)</label>
+      <input type="text" id="folder" placeholder="z. B. Taverns/Restaurant  (leer = ganze Bibliothek)">
+    </div>
+
+    <div class="card">
+      <h2>Claude</h2>
+      <label for="apikey">Anthropic API-Key</label>
+      <div class="row"><input type="password" id="apikey" placeholder="sk-ant-…" autocomplete="off"><button class="fit" id="saveKey">Übernehmen</button></div>
+      <label class="check"><input type="checkbox" id="remember"> auf diesem Rechner merken</label>
+      <div class="hint" id="keyState"></div>
+      <label class="check"><input type="checkbox" id="noLlm"> ohne Claude (Heuristik nach Dateinamen, braucht Unterordner)</label>
+    </div>
+
+    <div class="card">
+      <h2>Export</h2>
+      <label for="out">Ausgabeordner</label>
+      <div class="row"><input type="text" id="out" placeholder="z. B. D:\Atmos\Restaurant"><button class="fit" data-browse="out">Durchsuchen</button></div>
+      <label class="check"><input type="checkbox" id="loop" checked> nahtlos loopbar</label>
+      <div class="row">
+        <div><label for="aafMode">AAF</label>
+          <select id="aafMode">
+            <option value="none">kein AAF</option>
+            <option value="linked">verlinkt (WAVs im Ordner)</option>
+            <option value="embedded">eingebettet (eine Datei)</option>
+          </select></div>
+        <div><label for="aafLayout">Kanäle</label>
+          <select id="aafLayout">
+            <option value="dualmono">Mono-Paare (Pro-Tools-Stil)</option>
+            <option value="stereo">Stereo-Clips</option>
+          </select></div>
+      </div>
+      <label class="check"><input type="checkbox" id="rpp" checked> REAPER-Projekt (.rpp) zum direkten Öffnen</label>
+      <label class="check"><input type="checkbox" id="reaperLua"> REAPER-Bauplan für BuildScene.lua (in offenes Projekt einfügen)</label>
+      <div class="hint">Falls dein AAF-Import nichts findet: andere Kombination aus verlinkt/eingebettet und Mono-Paare/Stereo probieren.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <div class="actions">
+        <button class="primary" id="planBtn">1 · Atmo zusammenstellen</button>
+        <button class="primary" id="renderBtn" disabled>2 · Rendern</button>
+        <button id="variantBtn" disabled title="Gleicher Plan, neue Zufallsverteilung">Neue Variante</button>
+        <button id="revealBtn" disabled>Ausgabe öffnen</button>
+      </div>
+      <div id="status" style="margin-top:10px"></div>
+      <ol id="log"></ol>
+    </div>
+
+    <div class="card">
+      <h2>Ergebnis</h2>
+      <div id="results"><div class="empty">Noch nichts gerendert.</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Ausgewählte Sounds</h2>
+      <div id="catalog"><div class="empty">Nach dem Zusammenstellen siehst du hier, welche Dateien Claude gewählt hat und wofür.</div></div>
+      <details>
+        <summary>Plan bearbeiten (JSON)</summary>
+        <textarea id="planJson" class="code" spellcheck="false" placeholder="Plan erscheint nach Schritt 1"></textarea>
+        <div class="hint">Änderungen hier gelten beim nächsten Rendern. Rollen: bed, layer, event, skip. Szenen verweisen per id auf Dateien.</div>
+      </details>
+    </div>
+  </section>
+</main>
+
+<dialog id="dirDialog">
+  <div id="dirPath"></div>
+  <div class="row" style="margin-top:8px"><button class="fit" id="dirUp">↑ Übergeordnet</button><select id="dirRoots" class="fit"></select><span class="hint" id="dirAudio"></span></div>
+  <div id="dirList"></div>
+  <div class="actions" style="justify-content:flex-end"><button id="dirCancel">Abbrechen</button><button class="primary" id="dirChoose">Diesen Ordner wählen</button></div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const FIELDS = ["root", "useClap", "out", "folder", "request", "length", "seed", "noLlm", "loop", "aafMode", "aafLayout", "rpp", "reaperLua", "remember"];
+let scenes = ["wenig los", "mittel", "voll"];
+let lastOut = null, results = [], planFiles = [];
+
+// ---------------------------------------------------------------- Formular merken (nur lokal im Browser)
+function saveForm() {
+  const data = { scenes };
+  for (const f of FIELDS) { const el = $(f); data[f] = el.type === "checkbox" ? el.checked : el.value; }
+  try { localStorage.setItem("atmogen2", JSON.stringify(data)); } catch {}
+}
+function loadForm() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem("atmogen2")); } catch {}
+  if (!data) return;
+  if (Array.isArray(data.scenes) && data.scenes.length) scenes = data.scenes;
+  for (const f of FIELDS) if (f in data) { const el = $(f); if (el.type === "checkbox") el.checked = data[f]; else el.value = data[f]; }
+}
+
+// ---------------------------------------------------------------- Szenenliste
+function renderScenes() {
+  const box = $("scenes"); box.textContent = "";
+  scenes.forEach((s, i) => {
+    const row = document.createElement("div"); row.className = "scene-row";
+    const n = document.createElement("span"); n.textContent = i + 1;
+    const inp = document.createElement("input"); inp.type = "text"; inp.value = s;
+    inp.placeholder = "z. B. wenig los";
+    inp.oninput = () => { scenes[i] = inp.value; saveForm(); };
+    const del = document.createElement("button"); del.textContent = "✕"; del.title = "Szene entfernen";
+    del.disabled = scenes.length <= 1;
+    del.onclick = () => { scenes.splice(i, 1); renderScenes(); saveForm(); };
+    row.append(n, inp, del); box.append(row);
+  });
+}
+$("addScene").onclick = () => { scenes.push(""); renderScenes(); saveForm(); };
+
+// ---------------------------------------------------------------- Server und Jobs
+async function api(path, body) {
+  const res = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+async function runJob(path, body, bar) {
+  const { job } = await api(path, body);
+  $("log").textContent = "";
+  let shown = 0;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 600));
+    const j = await api("/api/job?id=" + job);
+    for (; shown < j.log.length; shown++) {
+      const li = document.createElement("li"); li.textContent = j.log[shown]; $("log").append(li);
+      $("log").scrollTop = $("log").scrollHeight;
+    }
+    if (j.progress) {
+      status(j.progress.msg, "busy");
+      if (bar && j.progress.total) { bar.style.display = "block"; bar.firstElementChild.style.width = (100 * j.progress.done / j.progress.total) + "%"; }
+    }
+    if (j.status === "done") { if (bar) bar.style.display = "none"; return j.result; }
+    if (j.status === "error") { if (bar) bar.style.display = "none"; throw new Error(j.error); }
+  }
+}
+function status(msg, kind) {
+  const el = $("status"); el.className = kind === "err" ? "err" : ""; el.textContent = "";
+  if (kind === "busy") { const s = document.createElement("span"); s.className = "spinner"; el.append(s); }
+  el.append(document.createTextNode(msg));
+}
+function busy(on) {
+  for (const id of ["planBtn", "renderBtn", "variantBtn", "scanBtn"])
+    $(id).disabled = on || ((id === "renderBtn" || id === "variantBtn") && !$("planJson").value.trim());
+}
+
+// ---------------------------------------------------------------- Bibliothek
+function showLibrary(info) {
+  if (!info.indexed) { $("libState").textContent = "Noch nicht analysiert."; $("libTree").textContent = ""; return; }
+  const when = info.scanned_at ? new Date(info.scanned_at * 1000).toLocaleString() : "";
+  const clapText = info.clap_files ? ` · Inhaltsanalyse für ${info.clap_files}` : "";
+  $("libState").textContent = `${info.files} Dateien · ${info.hours} h Audio · analysiert ${when}${clapText}`;
+  $("libTree").textContent = info.tree;
+}
+async function refreshLibrary() {
+  const root = $("root").value.trim();
+  if (!root) return;
+  try { showLibrary(await api("/api/library?root=" + encodeURIComponent(root))); } catch {}
+}
+$("root").addEventListener("change", refreshLibrary);
+$("scanBtn").onclick = async () => {
+  if (!$("root").value.trim()) { status("Bitte den Ordner der Bibliothek angeben.", "err"); return; }
+  busy(true); status("Analysiere Bibliothek …", "busy");
+  try {
+    const r = await runJob("/api/scan", { root: $("root").value.trim(), clap: $("useClap").checked }, $("scanBar"));
+    showLibrary(r);
+    status(`Bibliothek bereit: ${r.files} Dateien (${r.analyzed} neu analysiert${r.unreadable ? `, ${r.unreadable} nicht lesbar` : ""}).`);
+  } catch (e) { status(e.message, "err"); }
+  busy(false);
+};
+
+// ---------------------------------------------------------------- API-Key
+async function refreshKeyState(src) {
+  if (src === undefined) src = (await api("/api/state")).key_source;
+  $("keyState").textContent = src ? `Key aktiv (${src}).` : "Kein Key gesetzt. Ohne Key geht nur die Heuristik.";
+}
+$("saveKey").onclick = async () => {
+  const r = await api("/api/key", { api_key: $("apikey").value, remember: $("remember").checked });
+  $("apikey").value = ""; saveForm(); refreshKeyState(r.key_source);
+};
+
+// ---------------------------------------------------------------- Zusammenstellen & Rendern
+$("planBtn").onclick = async () => {
+  if (!$("root").value.trim()) { status("Bitte zuerst die Bibliothek angeben und analysieren.", "err"); return; }
+  busy(true); status($("noLlm").checked ? "Plane …" : "Claude sucht passende Sounds (das kann ein paar Minuten dauern) …", "busy");
+  try {
+    const r = await runJob("/api/plan", {
+      root: $("root").value.trim(), folder: $("folder").value.trim(), request: $("request").value, scenes,
+      length: +$("length").value, use_llm: !$("noLlm").checked,
+    });
+    $("planJson").value = JSON.stringify(r.plan, null, 1);
+    planFiles = r.files; showFiles();
+    status(`Plan steht: ${r.plan.scenes.length} Szenen aus ${r.files.length} Sounds. Jetzt rendern.`);
+  } catch (e) { status(e.message, "err"); }
+  busy(false);
+};
+
+async function doRender() {
+  let plan;
+  try { plan = JSON.parse($("planJson").value); } catch (e) { status("Plan-JSON ist ungültig: " + e.message, "err"); return; }
+  if (!$("out").value.trim()) { status("Bitte einen Ausgabeordner angeben.", "err"); return; }
+  busy(true); status("Rendere Szenen und Session-Export …", "busy");
+  stopPreview();
+  try {
+    const r = await runJob("/api/render", {
+      root: $("root").value.trim(), out: $("out").value.trim(), plan, length: +$("length").value, seed: +$("seed").value,
+      loop: $("loop").checked, aaf_mode: $("aafMode").value, aaf_layout: $("aafLayout").value, reaper_lua: $("reaperLua").checked, rpp: $("rpp").checked,
+    });
+    results = r.results; lastOut = r.out; $("revealBtn").disabled = false;
+    planFiles = r.files; showFiles(); await showResults();
+    status(`Fertig: ${results.length} Szenen in ${r.out}`);
+  } catch (e) { status(e.message, "err"); }
+  busy(false);
+}
+$("renderBtn").onclick = doRender;
+$("variantBtn").onclick = () => { $("seed").value = +$("seed").value + 1; saveForm(); doRender(); };
+$("revealBtn").onclick = () => lastOut && api("/api/reveal", { path: lastOut }).catch((e) => status(e.message, "err"));
+
+// ---------------------------------------------------------------- Anzeige
+const ROLE_LABEL = { bed: "Bed", layer: "Layer", event: "Event", skip: "Skip" };
+const ROLE_ORDER = { bed: 0, layer: 1, event: 2, skip: 3 };
+function showFiles() {
+  const t = document.createElement("table");
+  t.innerHTML = "<tr><th>Datei</th><th>Rolle</th><th>Kategorie</th><th class='num'>Länge</th></tr>";
+  const files = [...planFiles].sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.category.localeCompare(b.category));
+  for (const f of files) {
+    const tr = document.createElement("tr");
+    const td1 = document.createElement("td"); td1.textContent = f.rel; td1.title = f.description || "";
+    if (f.tags && f.tags.length) {
+      const t2 = document.createElement("div"); t2.className = "hint"; t2.style.marginTop = "0";
+      t2.textContent = `klingt nach: ${f.tags.join(", ")} · ${f.space}`; td1.append(t2);
+    }
+    const td2 = document.createElement("td"); const b = document.createElement("span");
+    b.className = "badge"; b.style.background = `var(--${f.role})`; b.textContent = ROLE_LABEL[f.role] || f.role; td2.append(b);
+    const td3 = document.createElement("td"); td3.textContent = f.category;
+    const td4 = document.createElement("td"); td4.className = "num"; td4.textContent = f.duration_s.toFixed(1) + " s";
+    tr.append(td1, td2, td3, td4); t.append(tr);
+  }
+  $("catalog").textContent = ""; $("catalog").append(t);
+}
+
+async function showResults() {
+  const box = $("results"); box.textContent = "";
+  const pv = document.createElement("div"); pv.className = "preview";
+  pv.innerHTML = `<div class="row" style="margin-bottom:8px"><strong style="flex:1">Überblend-Vorschau</strong>
+    <button class="fit" id="playBtn">▶ Abspielen</button></div>
+    <input type="range" id="mixSlider" min="0" max="${Math.max(results.length - 1, 0)}" step="0.01" value="0">
+    <div class="ticks" id="ticks"></div>
+    <div class="hint">Simuliert deinen Regler: alle Szenen laufen synchron im Loop, der Regler blendet equal-power zwischen benachbarten Szenen über.</div>`;
+  box.append(pv);
+  if (results[0] && results[0].rpp_all) {
+    const all = document.createElement("div"); all.className = "hint"; all.style.margin = "-6px 0 12px";
+    all.textContent = "Alle Szenen in einem REAPER-Projekt: " + results[0].rpp_all; box.append(all);
+  }
+  for (const r of results) { const s = document.createElement("span"); s.textContent = r.name; $("ticks").append(s); }
+  $("mixSlider").oninput = updateGains;
+  $("playBtn").onclick = () => (player ? stopPreview() : startPreview());
+
+  results.forEach((r, i) => {
+    const d = document.createElement("div"); d.className = "scene";
+    const h = document.createElement("h3"); h.textContent = `${i + 1}. ${r.name}`;
+    const m = document.createElement("div"); m.className = "meta"; m.textContent = `${r.tracks} Spuren · ${r.events} Events — ${r.notes}`;
+    const f = document.createElement("div"); f.className = "files";
+    f.textContent = [r.wav, r.rpp, r.aaf, r.reaper_lua].filter(Boolean).join("  ·  ");
+    const solo = document.createElement("button"); solo.textContent = "Nur diese hören"; solo.style.marginTop = "8px";
+    solo.onclick = () => { $("mixSlider").value = i; updateGains(); if (!player) startPreview(); };
+    d.append(h, m, f, solo); box.append(d);
+  });
+  buffers = null;
+}
+
+// ---------------------------------------------------------------- Vorschau mit Web Audio
+let ctx = null, buffers = null, player = null;
+async function loadBuffers() {
+  ctx = ctx || new AudioContext();
+  status("Lade Szenen für die Vorschau …", "busy");
+  buffers = await Promise.all(results.map(async (r) => {
+    const res = await fetch("/api/file?path=" + encodeURIComponent(r.wav));
+    return ctx.decodeAudioData(await res.arrayBuffer());
+  }));
+  status(`Fertig: ${results.length} Szenen in ${lastOut}`);
+}
+async function startPreview() {
+  if (!results.length) return;
+  if (!buffers) await loadBuffers();
+  await ctx.resume();
+  const t0 = ctx.currentTime + 0.1;
+  player = buffers.map((b) => {
+    const src = ctx.createBufferSource(); src.buffer = b; src.loop = true;
+    const g = ctx.createGain(); g.gain.value = 0; src.connect(g).connect(ctx.destination); src.start(t0);
+    return { src, g };
+  });
+  updateGains();
+  $("playBtn").textContent = "■ Stopp";
+}
+function stopPreview() {
+  if (player) for (const p of player) p.src.stop();
+  player = null;
+  if ($("playBtn")) $("playBtn").textContent = "▶ Abspielen";
+}
+function updateGains() {
+  if (!player) return;
+  const v = +$("mixSlider").value, i = Math.floor(v), f = v - i;
+  player.forEach((p, k) => {
+    let g = 0;
+    if (k === i) g = Math.cos(f * Math.PI / 2);
+    else if (k === i + 1) g = Math.sin(f * Math.PI / 2);
+    p.g.gain.setTargetAtTime(g, ctx.currentTime, 0.03);
+  });
+}
+
+// ---------------------------------------------------------------- Ordnerauswahl
+let dirTarget = null, dirCurrent = null;
+async function openDir(path) {
+  const r = await api("/api/browse?path=" + encodeURIComponent(path || ""));
+  dirCurrent = r.path;
+  $("dirPath").textContent = r.path;
+  $("dirAudio").textContent = r.audio_count ? `${r.audio_count} Audiodateien hier` : "";
+  $("dirUp").onclick = () => openDir(r.parent);
+  const roots = $("dirRoots"); roots.textContent = "";
+  for (const root of r.roots) { const o = document.createElement("option"); o.value = o.textContent = root; roots.append(o); }
+  roots.value = r.roots.find((x) => r.path.startsWith(x)) || r.roots[0];
+  roots.onchange = () => openDir(roots.value);
+  const list = $("dirList"); list.textContent = "";
+  for (const d of r.dirs) {
+    const el = document.createElement("div"); el.textContent = "📁 " + d;
+    el.onclick = () => openDir(r.path.replace(/[\\/]+$/, "") + (r.path.includes("\\") ? "\\" : "/") + d);
+    list.append(el);
+  }
+  if (!r.dirs.length) list.innerHTML = "<div class='empty' style='cursor:default'>keine Unterordner</div>";
+}
+document.querySelectorAll("[data-browse]").forEach((b) => b.onclick = () => {
+  dirTarget = b.dataset.browse;
+  openDir($(dirTarget).value.trim() || $("root").value.trim()).then(() => $("dirDialog").showModal());
+});
+$("dirCancel").onclick = () => $("dirDialog").close();
+$("dirChoose").onclick = () => {
+  $(dirTarget).value = dirCurrent; $("dirDialog").close(); saveForm();
+  if (dirTarget === "root") refreshLibrary();
+};
+
+// ---------------------------------------------------------------- Start
+loadForm(); renderScenes(); refreshKeyState(); refreshLibrary();
+for (const f of FIELDS) $(f).addEventListener("change", saveForm);
+</script>
+</body>
+</html>
