@@ -1,7 +1,8 @@
 -- BuildScene.lua
--- Baut eine von atmogen.py erzeugte Szene (<szene>.reaper.lua) als editierbare Session auf:
--- eine Spur pro Bed/Layer und pro Event-Kategorie, jedes Event als eigenes Item mit Pan, Gain und Rate.
--- Ergebnis entspricht der gerenderten WAV (bis auf die Loop-Nähte, die REAPER ohne Crossfade loopt).
+-- Baut eine von atmogen erzeugte Szene (<szene>.reaper.lua) als Session auf, alternativ zum AAF:
+-- eine Ordnerspur pro Szene, darunter eine Spur pro Bed/Layer/Event-Kategorie.
+-- Die Clips sind gebacken (Gain, Pan, Tonhöhe, Fades enthalten) und klingen exakt wie die WAV.
+-- Mono-Paare (L/R) liegen auf derselben Spur und sind hart links/rechts gepannt.
 
 local r = reaper
 
@@ -15,20 +16,16 @@ if not chunk then
 end
 local scene = chunk()
 
-local function db2lin(d) return 10 ^ (d / 20) end
-
 r.Undo_BeginBlock()
 r.PreventUIRefresh(1)
 
--- Ordnerspur für die Szene
 local base = r.CountTracks(0)
 r.InsertTrackAtIndex(base, true)
 local folder = r.GetTrack(0, base)
 r.GetSetMediaTrackInfo_String(folder, "P_NAME", scene.name, true)
 r.SetMediaTrackInfo_Value(folder, "I_FOLDERDEPTH", 1)
-r.SetMediaTrackInfo_Value(folder, "D_VOL", db2lin(scene.master_gain_db or 0))
 
-local last
+local last = folder
 for _, t in ipairs(scene.tracks) do
   local idx = r.CountTracks(0)
   r.InsertTrackAtIndex(idx, true)
@@ -45,18 +42,20 @@ for _, t in ipairs(scene.tracks) do
       r.GetSetMediaItemTakeInfo_String(take, "P_NAME", it.file:match("([^/\\]+)$") or it.file, true)
       r.SetMediaItemInfo_Value(item, "D_POSITION", it.pos)
       r.SetMediaItemInfo_Value(item, "D_LENGTH", it.len)
-      r.SetMediaItemInfo_Value(item, "B_LOOPSRC", it.loop and 1 or 0)
-      r.SetMediaItemInfo_Value(item, "D_VOL", db2lin(it.gain_db))
-      r.SetMediaItemInfo_Value(item, "D_FADEINLEN", it.loop and it.fade or 0)
-      r.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", it.fade)
-      r.SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", it.offs)
-      r.SetMediaItemTakeInfo_Value(take, "D_PLAYRATE", it.rate)
-      r.SetMediaItemTakeInfo_Value(take, "B_PPITCH", 0) -- Rate ändert auch die Tonhöhe, wie im Render
-      r.SetMediaItemTakeInfo_Value(take, "D_PAN", it.pan)
+      r.SetMediaItemInfo_Value(item, "D_FADEINLEN", 0)
+      r.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", 0)
+      r.SetMediaItemTakeInfo_Value(take, "D_PAN", it.pan or 0)
     end
   end
 end
-if last then r.SetMediaTrackInfo_Value(last, "I_FOLDERDEPTH", -1) end
+if last ~= folder then
+  r.SetMediaTrackInfo_Value(last, "I_FOLDERDEPTH", -1)
+else
+  r.SetMediaTrackInfo_Value(folder, "I_FOLDERDEPTH", 0)
+end
+
+-- Loop-Bereich auf die Szenenlänge setzen, damit man den Loop direkt prüfen kann
+r.GetSet_LoopTimeRange(true, true, 0, scene.length, false)
 
 r.PreventUIRefresh(-1)
 r.UpdateArrange()
