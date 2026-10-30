@@ -41,6 +41,7 @@ def main() -> None:
     mk.add_argument("--no-loop", action="store_true", help="feste Länge statt nahtlosem Loop")
     mk.add_argument("--aaf", choices=["none", "embedded", "linked"], default="none")
     mk.add_argument("--aaf-layout", choices=["dualmono", "stereo"], default="dualmono")
+    mk.add_argument("--rpp", action="store_true", help="REAPER-Projekte (.rpp) zum direkten Öffnen schreiben")
     mk.add_argument("--reaper-lua", action="store_true", help="zusätzlich Bauplan für BuildScene.lua")
     mk.add_argument("--plan", type=Path, help="vorhandenen plan.json verwenden statt neu zu planen")
     mk.add_argument("--no-llm", action="store_true", help="Heuristik nach Dateinamen statt Claude (braucht --folder)")
@@ -75,7 +76,7 @@ def main() -> None:
     used = {f["id"] for f in plan["files"]}
     core.render_all(plan, index.paths(used), args.out, length=args.length, sr=args.sr, seed=args.seed,
                     loop=not args.no_loop, aaf_mode=args.aaf, aaf_layout=args.aaf_layout,
-                    reaper_lua=args.reaper_lua)
+                    reaper_lua=args.reaper_lua, rpp=args.rpp)
 
 
 if __name__ == "__main__":

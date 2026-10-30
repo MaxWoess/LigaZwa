@@ -139,7 +139,8 @@ def job_render(data: dict, log, progress) -> dict:
         plan, index.paths(used), out,
         length=float(data.get("length", 120)), sr=int(data.get("sr", 48000)), seed=int(data.get("seed", 1)),
         loop=bool(data.get("loop", True)), aaf_mode=data.get("aaf_mode", "none"),
-        aaf_layout=data.get("aaf_layout", "dualmono"), reaper_lua=bool(data.get("reaper_lua")), log=log,
+        aaf_layout=data.get("aaf_layout", "dualmono"), reaper_lua=bool(data.get("reaper_lua")),
+        rpp=bool(data.get("rpp", True)), log=log,
     )
     return {"results": results, "out": str(out), "files": plan_files(index, plan)}
 

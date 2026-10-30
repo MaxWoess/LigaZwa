@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shutil
 from pathlib import Path
@@ -360,8 +361,9 @@ def place(pos: float, arr: np.ndarray, n: int, sr: int, loop: bool) -> list[tupl
 
 def render_all(plan: dict, paths: dict[int, Path], out: Path, *, length: float = 120.0, sr: int = 48000,
                seed: int = 1, loop: bool = True, aaf_mode: str = "none", aaf_layout: str = "dualmono",
-               reaper_lua: bool = False, log: Log = print) -> list[dict]:
-    """Rendert alle Szenen; aaf_mode: none | embedded | linked. Liefert pro Szene die erzeugten Dateien."""
+               reaper_lua: bool = False, rpp: bool = False, log: Log = print) -> list[dict]:
+    """Rendert alle Szenen; aaf_mode: none | embedded | linked; rpp: REAPER-Projekte schreiben.
+    Liefert pro Szene die erzeugten Dateien."""
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=1), encoding="utf-8")
     roles = {f["id"]: f["role"] for f in plan["files"]}
@@ -386,23 +388,30 @@ def render_all(plan: dict, paths: dict[int, Path], out: Path, *, length: float =
         peak = max(peak, float(np.max(np.abs(mix))))
     master_db = min(0.0, OUTPUT_PEAK_DB - db(peak))
 
-    # Pass 2: endgültiger Mix plus gebackene Clips für die Session-Exporte
+    # Pass 2: endgültiger Mix plus gebackene Clips für die Session-Exporte.
+    # AAF und Lua-Bauplan nutzen das gewählte Kanal-Layout, das REAPER-Projekt immer Stereo-Clips.
     results = []
-    want_clips = aaf_mode != "none" or reaper_lua
+    session = aaf_mode != "none" or reaper_lua
+    layouts = ({aaf_layout} if session else set()) | ({"stereo"} if rpp else set())
+    rpp_scenes = []
     for idx, (scene, clips) in enumerate(scenes):
         slug = re.sub(r"[^A-Za-z0-9_-]+", "_", scene.get("slug") or "") or f"szene_{idx + 1}"
         slug = f"{idx + 1:02d}_{slug}"
         clip_dir = out / f"{slug}_clips"
-        if want_clips:
+        if layouts:
             shutil.rmtree(clip_dir, ignore_errors=True)
             clip_dir.mkdir(parents=True)
         mix = np.zeros((n, 2), dtype=np.float32)
-        placed = []  # (track, pos_samples, len_samples, wav_paths)
+        placed, placed_rpp = [], []  # (track, pos_samples, len_samples, wav_paths)
         for ci, c in enumerate(clips):
             for pi, (p, piece) in enumerate(place(c["pos"], bake(c, lib, master_db), n, sr, loop)):
                 mix[p : p + len(piece)] += piece
-                if want_clips and len(piece) > 0:
-                    placed.append((c["track"], p, len(piece), write_clip(clip_dir, f"c{ci:04d}_{pi}", piece, sr, aaf_layout)))
+                if layouts and len(piece) > 0:
+                    files = write_clip(clip_dir, f"c{ci:04d}_{pi}", piece, sr, layouts)
+                    if session:
+                        placed.append((c["track"], p, len(piece), files[aaf_layout]))
+                    if rpp:
+                        placed_rpp.append((c["track"], p, len(piece), files["stereo"]))
         wav = out / f"{slug}.wav"
         sf.write(str(wav), mix, sr, subtype="PCM_24")
         res = {"name": scene["name"], "slug": slug, "notes": scene.get("notes", ""), "wav": str(wav),
@@ -418,25 +427,80 @@ def render_all(plan: dict, paths: dict[int, Path], out: Path, *, length: float =
             lua = out / f"{slug}.reaper.lua"
             write_reaper_plan(lua, scene["name"], placed, length, sr)
             res["reaper_lua"] = str(lua)
-        if want_clips and aaf_mode == "embedded" and not reaper_lua:
-            shutil.rmtree(clip_dir, ignore_errors=True)  # steckt jetzt im AAF
+        if rpp:
+            project = out / f"{slug}.rpp"
+            write_rpp(project, [(scene["name"], placed_rpp)], length, sr)
+            res["rpp"] = str(project)
+            rpp_scenes.append((f"{idx + 1}. {scene['name']}", placed_rpp))
+        if aaf_mode == "embedded" and not reaper_lua:
+            # steckt jetzt im AAF; Stereo-Clips für das REAPER-Projekt bleiben
+            if not rpp:
+                shutil.rmtree(clip_dir, ignore_errors=True)
+            elif aaf_layout == "dualmono":
+                for f in clip_dir.glob("*.[LR].wav"):
+                    f.unlink()
         results.append(res)
         log(f"-> {wav.name}  ({res['tracks']} Spuren, {res['events']} Events)  {res['notes']}")
+    if rpp and len(rpp_scenes) > 1:
+        combined = out / "alle_szenen.rpp"
+        write_rpp(combined, rpp_scenes, length, sr)
+        for res in results:
+            res["rpp_all"] = str(combined)
+        log(f"REAPER: {combined.name} enthält alle Szenen als Ordnerspuren")
     log(f"Master-Gain {master_db:+.1f} dB, Ausgabe in {out.resolve()}")
     return results
 
 
-def write_clip(clip_dir: Path, name: str, piece: np.ndarray, sr: int, layout: str) -> list[Path]:
-    if layout == "stereo":
+def write_clip(clip_dir: Path, name: str, piece: np.ndarray, sr: int, layouts: set[str]) -> dict[str, list[Path]]:
+    """Schreibt einen gebackenen Clip als Stereo-Datei und/oder L/R-Mono-Paar."""
+    out = {}
+    if "stereo" in layouts:
         p = clip_dir / f"{name}.wav"
         sf.write(str(p), piece, sr, subtype="PCM_24")
-        return [p]
-    paths = []
-    for ch, suffix in ((0, "L"), (1, "R")):
-        p = clip_dir / f"{name}.{suffix}.wav"
-        sf.write(str(p), piece[:, ch], sr, subtype="PCM_24")
-        paths.append(p)
-    return paths
+        out["stereo"] = [p]
+    if "dualmono" in layouts:
+        out["dualmono"] = []
+        for ch, suffix in ((0, "L"), (1, "R")):
+            p = clip_dir / f"{name}.{suffix}.wav"
+            sf.write(str(p), piece[:, ch], sr, subtype="PCM_24")
+            out["dualmono"].append(p)
+    return out
+
+
+def rpp_str(s: str) -> str:
+    """RPP-Strings: in "…", '…' oder `…` gefasst, je nachdem, was im Text nicht vorkommt."""
+    for q in ('"', "'", "`"):
+        if q not in s:
+            return f"{q}{s}{q}"
+    return '"' + s.replace('"', "'") + '"'
+
+
+def write_rpp(path: Path, scenes: list[tuple[str, list]], length: float, sr: int) -> None:
+    """REAPER-Projekt aus gebackenen Stereo-Clips. Mehrere Szenen werden zu Ordnerspuren; nur die
+    erste ist hörbar. Medienpfade sind relativ zum Projekt, der Ausgabeordner bleibt verschiebbar."""
+    lines = ['<REAPER_PROJECT 0.1 "7.0" 0', f"  SAMPLERATE {sr} 0 0", "  LOOP 1",
+             f"  SELECTION 0 {length:.6f}", f"  SELECTION2 0 {length:.6f}"]
+    folders = len(scenes) > 1
+    for si, (name, placed) in enumerate(scenes):
+        by_track: dict[str, list] = {}
+        for track, pos, ln, wavs in placed:
+            by_track.setdefault(track, []).append((pos, ln, wavs[0]))
+        if folders:
+            lines += ["  <TRACK", f"    NAME {rpp_str(name)}", f"    MUTESOLO {0 if si == 0 else 1} 0 0",
+                      "    ISBUS 1 1", "  >"]
+        for ti, (track, items) in enumerate(by_track.items()):
+            last = folders and ti == len(by_track) - 1
+            lines += ["  <TRACK", f"    NAME {rpp_str(track)}", f"    ISBUS {'2 -1' if last else '0 0'}"]
+            for pos, ln, wav in items:
+                rel = os.path.relpath(wav.resolve(), path.parent.resolve())
+                lines += ["    <ITEM", f"      POSITION {pos / sr:.6f}", f"      LENGTH {ln / sr:.6f}", "      LOOP 0",
+                          "      FADEIN 1 0 0 1 0 0 0", "      FADEOUT 1 0 0 1 0 0 0", f"      NAME {rpp_str(wav.name)}",
+                          "      <SOURCE WAVE", f"        FILE {rpp_str(rel)}", "      >", "    >"]
+            lines.append("  >")
+        if folders and not by_track:  # leere Szene: Ordner sofort schließen
+            lines[-2] = "    ISBUS 0 0"
+    lines.append(">")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def lua_str(s: str) -> str:

@@ -132,9 +132,9 @@
       <div class="row">
         <div><label for="aafMode">AAF</label>
           <select id="aafMode">
+            <option value="none">kein AAF</option>
             <option value="linked">verlinkt (WAVs im Ordner)</option>
             <option value="embedded">eingebettet (eine Datei)</option>
-            <option value="none">kein AAF</option>
           </select></div>
         <div><label for="aafLayout">Kanäle</label>
           <select id="aafLayout">
@@ -142,7 +142,8 @@
             <option value="stereo">Stereo-Clips</option>
           </select></div>
       </div>
-      <label class="check"><input type="checkbox" id="reaperLua"> zusätzlich REAPER-Bauplan (für BuildScene.lua)</label>
+      <label class="check"><input type="checkbox" id="rpp" checked> REAPER-Projekt (.rpp) zum direkten Öffnen</label>
+      <label class="check"><input type="checkbox" id="reaperLua"> REAPER-Bauplan für BuildScene.lua (in offenes Projekt einfügen)</label>
       <div class="hint">Falls dein AAF-Import nichts findet: andere Kombination aus verlinkt/eingebettet und Mono-Paare/Stereo probieren.</div>
     </div>
   </section>
@@ -185,7 +186,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["root", "useClap", "out", "folder", "request", "length", "seed", "noLlm", "loop", "aafMode", "aafLayout", "reaperLua", "remember"];
+const FIELDS = ["root", "useClap", "out", "folder", "request", "length", "seed", "noLlm", "loop", "aafMode", "aafLayout", "rpp", "reaperLua", "remember"];
 let scenes = ["wenig los", "mittel", "voll"];
 let lastOut = null, results = [], planFiles = [];
 
@@ -316,7 +317,7 @@ async function doRender() {
   try {
     const r = await runJob("/api/render", {
       root: $("root").value.trim(), out: $("out").value.trim(), plan, length: +$("length").value, seed: +$("seed").value,
-      loop: $("loop").checked, aaf_mode: $("aafMode").value, aaf_layout: $("aafLayout").value, reaper_lua: $("reaperLua").checked,
+      loop: $("loop").checked, aaf_mode: $("aafMode").value, aaf_layout: $("aafLayout").value, reaper_lua: $("reaperLua").checked, rpp: $("rpp").checked,
     });
     results = r.results; lastOut = r.out; $("revealBtn").disabled = false;
     planFiles = r.files; showFiles(); await showResults();
@@ -360,6 +361,10 @@ async function showResults() {
     <div class="ticks" id="ticks"></div>
     <div class="hint">Simuliert deinen Regler: alle Szenen laufen synchron im Loop, der Regler blendet equal-power zwischen benachbarten Szenen über.</div>`;
   box.append(pv);
+  if (results[0] && results[0].rpp_all) {
+    const all = document.createElement("div"); all.className = "hint"; all.style.margin = "-6px 0 12px";
+    all.textContent = "Alle Szenen in einem REAPER-Projekt: " + results[0].rpp_all; box.append(all);
+  }
   for (const r of results) { const s = document.createElement("span"); s.textContent = r.name; $("ticks").append(s); }
   $("mixSlider").oninput = updateGains;
   $("playBtn").onclick = () => (player ? stopPreview() : startPreview());
@@ -369,7 +374,7 @@ async function showResults() {
     const h = document.createElement("h3"); h.textContent = `${i + 1}. ${r.name}`;
     const m = document.createElement("div"); m.className = "meta"; m.textContent = `${r.tracks} Spuren · ${r.events} Events — ${r.notes}`;
     const f = document.createElement("div"); f.className = "files";
-    f.textContent = [r.wav, r.aaf, r.reaper_lua].filter(Boolean).join("  ·  ");
+    f.textContent = [r.wav, r.rpp, r.aaf, r.reaper_lua].filter(Boolean).join("  ·  ");
     const solo = document.createElement("button"); solo.textContent = "Nur diese hören"; solo.style.marginTop = "8px";
     solo.onclick = () => { $("mixSlider").value = i; updateGains(); if (!player) startPreview(); };
     d.append(h, m, f, solo); box.append(d);

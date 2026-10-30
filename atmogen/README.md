@@ -14,8 +14,9 @@ Szenen überblendet (z. B. „Anzahl Menschen im Raum“).
 - **Gleich lang und nahtlos loopbar.** Layer werden zyklisch gecrossfadet, Events laufen über die
   Loop-Grenze weiter.
 - **Überblend-fest.** Beds und Layer nutzen in jeder Szene dieselben Segmente und Panoramapositionen.
-- **Export.** Stereo-WAV (24 bit) pro Szene, dazu ein AAF (verlinkt oder eingebettet, Mono-Paare oder
-  Stereo). Optional gibt es einen REAPER-Bauplan für `BuildScene.lua`. Die Session-Clips sind
+- **Export.** Stereo-WAV (24 bit) pro Szene, dazu ein **REAPER-Projekt (`.rpp`)** zum direkten
+  Öffnen (pro Szene plus `alle_szenen.rpp` mit einer Ordnerspur je Szene) und optional ein AAF
+  (verlinkt oder eingebettet, Mono-Paare oder Stereo) bzw. ein Bauplan für `BuildScene.lua`. Die Session-Clips sind
   gebacken und klingen exakt wie die WAV.
 
 ## Optional: Inhaltsanalyse mit CLAP
@@ -58,7 +59,7 @@ Kommandozeile:
 
 ```bash
 python atmogen.py scan D:/Sounds
-python atmogen.py make D:/Sounds "Gehobenes Restaurant am Abend, kein Lachen" -o out --aaf linked \
+python atmogen.py make D:/Sounds "Gehobenes Restaurant am Abend, kein Lachen" -o out --rpp \
   --scene "wenig los" --scene "mittel" --scene "voll"
 ```
 
