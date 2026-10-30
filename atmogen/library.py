@@ -171,12 +171,11 @@ class LibraryIndex:
 
     @staticmethod
     def line(e: dict) -> str:
-        kind = "durchgehend" if e["active_ratio"] > 0.7 else ("kurz" if e["duration_s"] < 4 else "vereinzelt")
-        ch = "stereo" if e["channels"] >= 2 else "mono"
-        text = (f"{e['id']} | {e['rel']} | {e['duration_s']:.1f}s | {ch} | {kind} "
-                f"(active {e['active_ratio']:.2f}) | rms {e['rms_db']:.0f} dB")
+        kind = "durchg." if e["active_ratio"] > 0.7 else ("kurz" if e["duration_s"] < 4 else "vereinz.")
+        ch = "st" if e["channels"] >= 2 else "mo"
+        text = f"{e['id']}|{e['rel']}|{e['duration_s']:.1f}s {ch} {kind}|{e['rms_db']:.0f}dB"
         if e.get("tags"):
-            text += f" | klingt nach: {', '.join(e['tags'])} | Raum: {e.get('space', '?')}"
+            text += f"|{', '.join(e['tags'])}; {e.get('space', '?')}"
         return text
 
     def folder_tree(self, folder: str = "", depth: int = 2, max_lines: int = 300) -> str:
@@ -200,10 +199,10 @@ class LibraryIndex:
         head = f"Ordner '{base or '/'}': {loose} Dateien direkt darin"
         return "\n".join([head, *lines])
 
-    def list_folder(self, folder: str, max_files: int = 80) -> str:
+    def list_folder(self, folder: str, max_files: int = 40) -> str:
         base = folder.strip("/")
         direct = [e for e in self.in_folder(base) if e["rel"].rsplit("/", 1)[0] == base or (not base and "/" not in e["rel"])]
-        out = [self.folder_tree(base, depth=1, max_lines=100), "", f"Dateien direkt in '{base or '/'}':"]
+        out = [self.folder_tree(base, depth=1, max_lines=60), "", f"Dateien direkt in '{base or '/'}':"]
         out += [self.line(e) for e in sorted(direct, key=lambda e: e["rel"])[:max_files]]
         if len(direct) > max_files:
             out.append(f"… {len(direct) - max_files} weitere (search_library mit folder nutzen)")
@@ -235,7 +234,7 @@ class LibraryIndex:
             if score:
                 hits.append((score, e))
         hits.sort(key=lambda h: (-h[0], h[1]["rel"]))
-        limit = max(1, min(int(limit or 40), 100))
+        limit = max(1, min(int(limit or 20), 40))
         lines = [self.line(e) for _, e in hits[:limit]]
         more = f"\n… {len(hits) - limit} weitere Treffer" if len(hits) > limit else ""
         return (f"{len(hits)} Treffer für '{query}'" + (f" in '{folder}'" if folder else "") + ":\n"
@@ -322,7 +321,7 @@ class LibraryIndex:
         return self._ranked(cands, mat @ emb[fid], limit, f"ähnlich wie {fid} ({self.entries[fid]['rel']})")
 
     def _ranked(self, cands: list[dict], sims: np.ndarray, limit: int, title: str) -> str:
-        limit = max(1, min(int(limit or 30), 100))
+        limit = max(1, min(int(limit or 20), 40))
         order = np.argsort(sims)[::-1][:limit]
         lines = [f"Ähnlichkeit {sims[i]:.2f} | {self.line(cands[i])}" for i in order]
         return f"{title}, beste {len(lines)} von {len(cands)}:\n" + "\n".join(lines)
