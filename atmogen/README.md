@@ -32,7 +32,9 @@ pip install -r requirements-clap.txt   # PyTorch (CPU) + transformers
 
 Im UI das Häkchen „Inhaltsanalyse mit CLAP“ setzen und „Analysieren“ klicken. Beim ersten Mal lädt das
 Modell (`laion/larger_clap_general`, rund 800 MB). Die Analyse ist einmalig und deutlich langsamer als
-der normale Scan; danach liegt sie im Index, und Abbrüche verlieren höchstens die letzten 200 Dateien.
+der normale Scan. Analysiert werden alle Dateien der Bibliothek; der Zwischenstand wird alle 200
+Dateien gesichert, sodass ein Abbruch nur die Arbeit seit dem letzten Sichern kostet. Ein erneuter Klick
+auf „Analysieren“ macht dort weiter.
 Die Analyse ist grob: Sie unterscheidet „Restaurant“ von „Wald“ und „hallig“ von „trocken“, ersetzt aber
 keine guten Dateinamen.
 
