@@ -18,6 +18,24 @@ Szenen überblendet (z. B. „Anzahl Menschen im Raum“).
   Stereo). Optional gibt es einen REAPER-Bauplan für `BuildScene.lua`. Die Session-Clips sind
   gebacken und klingen exakt wie die WAV.
 
+## Optional: Inhaltsanalyse mit CLAP
+
+CLAP ist ein Audio-Text-Modell, kostenlos und lokal auf der CPU. Damit kann Claude zusätzlich
+**nach Klang suchen** („gedämpftes Murmeln in einem kleinen Raum“), **ähnliche Varianten** zu einem
+guten Sound finden und **prüfen, ob die gewählten Sounds zusammenpassen** (gleicher Raum, ähnlicher
+Charakter). Jede Datei bekommt automatisch Schlagwörter („klingt nach …“) und eine Einschätzung des
+Raums.
+
+```bash
+pip install -r requirements-clap.txt   # PyTorch (CPU) + transformers
+```
+
+Im UI das Häkchen „Inhaltsanalyse mit CLAP“ setzen und „Analysieren“ klicken. Beim ersten Mal lädt das
+Modell (`laion/larger_clap_general`, rund 800 MB). Die Analyse ist einmalig und deutlich langsamer als
+der normale Scan; danach liegt sie im Index, und Abbrüche verlieren höchstens die letzten 200 Dateien.
+Die Analyse ist grob: Sie unterscheidet „Restaurant“ von „Wald“ und „hallig“ von „trocken“, ersetzt aber
+keine guten Dateinamen.
+
 ## Start
 
 ```bash
@@ -46,7 +64,8 @@ python atmogen.py make D:/Sounds "Gehobenes Restaurant am Abend, kein Lachen" -o
 
 | Datei | Zweck |
 |---|---|
-| `library.py` | Bibliotheks-Index: Scan, Messwerte, Suche |
+| `library.py` | Bibliotheks-Index: Scan, Messwerte, Suche, Klangsuche |
+| `clap.py` | optionale Inhaltsanalyse mit CLAP |
 | `planner.py` | Claude durchsucht die Bibliothek und plant die Szenen |
 | `core.py` | Plan-Schema, Heuristik, Platzierung, Render |
 | `aafexport.py` | AAF-Export (pyaaf2) |

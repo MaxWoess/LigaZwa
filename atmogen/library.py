@@ -76,7 +76,9 @@ class LibraryIndex:
         self.root = Path(root).expanduser().resolve()
         key = hashlib.sha1(str(self.root).lower().encode()).hexdigest()[:16]
         self.file = INDEX_DIR / f"{key}.json"
+        self.emb_file = INDEX_DIR / f"{key}.clap.npz"
         self.entries: dict[int, dict] = {}
+        self._emb: dict[int, np.ndarray] | None = None
         self.scanned_at: float | None = None
         self._load()
 
@@ -171,8 +173,11 @@ class LibraryIndex:
     def line(e: dict) -> str:
         kind = "durchgehend" if e["active_ratio"] > 0.7 else ("kurz" if e["duration_s"] < 4 else "vereinzelt")
         ch = "stereo" if e["channels"] >= 2 else "mono"
-        return (f"{e['id']} | {e['rel']} | {e['duration_s']:.1f}s | {ch} | {kind} "
+        text = (f"{e['id']} | {e['rel']} | {e['duration_s']:.1f}s | {ch} | {kind} "
                 f"(active {e['active_ratio']:.2f}) | rms {e['rms_db']:.0f} dB")
+        if e.get("tags"):
+            text += f" | klingt nach: {', '.join(e['tags'])} | Raum: {e.get('space', '?')}"
+        return text
 
     def folder_tree(self, folder: str = "", depth: int = 2, max_lines: int = 300) -> str:
         """Unterordner mit Dateianzahl und Gesamtdauer (für den Überblick)."""
@@ -204,10 +209,9 @@ class LibraryIndex:
             out.append(f"… {len(direct) - max_files} weitere (search_library mit folder nutzen)")
         return "\n".join(out)
 
-    def search(self, query: str, folder: str = "", min_duration: float = 0, max_duration: float = 0,
-               continuous: str = "any", limit: int = 40) -> str:
-        terms = [t for t in re.split(r"[\s,;|]+", query.lower()) if t]
-        hits = []
+    def filtered(self, folder: str = "", min_duration: float = 0, max_duration: float = 0,
+                 continuous: str = "any") -> list[dict]:
+        out = []
         for e in self.in_folder(folder):
             if min_duration and e["duration_s"] < min_duration:
                 continue
@@ -217,6 +221,14 @@ class LibraryIndex:
                 continue
             if continuous == "no" and e["active_ratio"] > 0.7:
                 continue
+            out.append(e)
+        return out
+
+    def search(self, query: str, folder: str = "", min_duration: float = 0, max_duration: float = 0,
+               continuous: str = "any", limit: int = 40) -> str:
+        terms = [t for t in re.split(r"[\s,;|]+", query.lower()) if t]
+        hits = []
+        for e in self.filtered(folder, min_duration, max_duration, continuous):
             rel = e["rel"].lower()
             name = rel.rsplit("/", 1)[-1]
             score = sum(3 if t in name else 1 for t in terms if t in rel) if terms else 1
@@ -228,3 +240,113 @@ class LibraryIndex:
         more = f"\n… {len(hits) - limit} weitere Treffer" if len(hits) > limit else ""
         return (f"{len(hits)} Treffer für '{query}'" + (f" in '{folder}'" if folder else "") + ":\n"
                 + "\n".join(lines) + more) if hits else f"Keine Treffer für '{query}'."
+
+    # ------------------------------------------------------------------ CLAP (optional)
+    def embeddings(self) -> dict[int, np.ndarray]:
+        if self._emb is None:
+            self._emb = {}
+            try:
+                with np.load(self.emb_file) as d:
+                    self._emb = {int(i): v.astype(np.float32) for i, v in zip(d["ids"], d["emb"])}
+            except (OSError, KeyError, ValueError):
+                pass
+        return self._emb
+
+    def _save_emb(self) -> None:
+        emb = self.embeddings()
+        ids = np.array(sorted(emb), dtype=np.int64)
+        mat = np.stack([emb[i] for i in ids]).astype(np.float16) if len(ids) else np.zeros((0, 512), np.float16)
+        tmp = self.emb_file.with_suffix(".tmp.npz")
+        with open(tmp, "wb") as f:
+            np.savez(f, ids=ids, emb=mat)
+        tmp.replace(self.emb_file)
+
+    def clap_count(self) -> int:
+        emb = self.embeddings()
+        return sum(1 for e in self.entries.values() if e["id"] in emb and e.get("clap_mtime") == e["mtime"])
+
+    def clap_scan(self, progress: Callable[[str, int, int], None] = lambda *a: None) -> dict:
+        import clap
+
+        progress("Lade CLAP-Modell (beim ersten Mal Download, ca. 800 MB) …", 0, 0)
+        model = clap.get_model()
+        emb = self.embeddings()
+        for fid in [i for i in emb if i not in self.entries]:
+            del emb[fid]
+        todo = [e for e in self.entries.values() if e["id"] not in emb or e.get("clap_mtime") != e["mtime"]]
+        vocab = model.embed_text(clap.VOCAB)
+        spaces = model.embed_text(clap.SPACES)
+        started = time.time()
+        for i, e in enumerate(todo, 1):
+            v = clap.embed_files(model, [str(self.root / e["rel"])])[0]
+            if v is not None:
+                emb[e["id"]] = v
+                e["tags"] = [clap.VOCAB[j] for j in np.argsort(vocab @ v)[::-1][:3]]
+                e["space"] = clap.SPACES[int(np.argmax(spaces @ v))]
+                e["clap_mtime"] = e["mtime"]
+            if i % 10 == 0 or i == len(todo):
+                eta = (time.time() - started) / i * (len(todo) - i)
+                progress(f"Inhaltsanalyse … {i}/{len(todo)} (noch ca. {eta / 60:.0f} min)", i, len(todo))
+            if i % 200 == 0:  # Zwischenstand sichern, damit ein Abbruch nicht alles verliert
+                self._save_emb()
+                self._save()
+        self._save_emb()
+        self._save()
+        return {"clap_analyzed": len(todo), "clap_files": self.clap_count()}
+
+    def _emb_candidates(self, folder: str, min_duration: float, max_duration: float, continuous: str):
+        emb = self.embeddings()
+        cands = [e for e in self.filtered(folder, min_duration, max_duration, continuous) if e["id"] in emb]
+        if not cands:
+            return [], np.zeros((0, 1), np.float32)
+        return cands, np.stack([emb[e["id"]] for e in cands])
+
+    def search_sound(self, description: str, folder: str = "", min_duration: float = 0, max_duration: float = 0,
+                     continuous: str = "any", limit: int = 30) -> str:
+        import clap
+
+        cands, mat = self._emb_candidates(folder, min_duration, max_duration, continuous)
+        if not cands:
+            return "Keine Dateien mit Inhaltsanalyse in diesem Bereich."
+        q = clap.get_model().embed_text([description])[0]
+        return self._ranked(cands, mat @ q, limit, f"Klang wie '{description}'")
+
+    def similar(self, fid: int, folder: str = "", min_duration: float = 0, max_duration: float = 0,
+                continuous: str = "any", limit: int = 20) -> str:
+        emb = self.embeddings()
+        if fid not in emb:
+            return f"Datei {fid} hat keine Inhaltsanalyse."
+        cands, mat = self._emb_candidates(folder, min_duration, max_duration, continuous)
+        keep = [i for i, e in enumerate(cands) if e["id"] != fid]
+        cands, mat = [cands[i] for i in keep], mat[keep]
+        return self._ranked(cands, mat @ emb[fid], limit, f"ähnlich wie {fid} ({self.entries[fid]['rel']})")
+
+    def _ranked(self, cands: list[dict], sims: np.ndarray, limit: int, title: str) -> str:
+        limit = max(1, min(int(limit or 30), 100))
+        order = np.argsort(sims)[::-1][:limit]
+        lines = [f"Ähnlichkeit {sims[i]:.2f} | {self.line(cands[i])}" for i in order]
+        return f"{title}, beste {len(lines)} von {len(cands)}:\n" + "\n".join(lines)
+
+    def fit_check(self, ids: list[int]) -> str:
+        """Wie gut passen die Dateien klanglich zusammen? Markiert Ausreißer."""
+        emb = self.embeddings()
+        ids = [i for i in dict.fromkeys(ids) if i in emb]
+        if len(ids) < 2:
+            return "Zu wenige Dateien mit Inhaltsanalyse für einen Vergleich."
+        mat = np.stack([emb[i] for i in ids])
+        sim = mat @ mat.T
+        mean = (sim.sum(axis=1) - 1) / (len(ids) - 1)
+        median = float(np.median(mean))
+        spaces = [self.entries[i].get("space", "?") for i in ids]
+        common = max(set(spaces), key=spaces.count)
+        lines = [f"Raumcharakter überwiegend: {common}; mittlere Ähnlichkeit {median:.2f}"]
+        for k in np.argsort(mean):
+            fid = ids[k]
+            flags = []
+            if mean[k] < median - 0.12:
+                flags.append("klingt deutlich anders als der Rest")
+            if spaces[k] != common:
+                flags.append(f"anderer Raum ({spaces[k]})")
+            lines.append(f"{fid} | {self.entries[fid]['rel']} | Ähnlichkeit zum Rest {mean[k]:.2f}"
+                         + (f" | ACHTUNG: {', '.join(flags)}" if flags else ""))
+        return "\n".join(lines)

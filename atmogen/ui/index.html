@@ -93,6 +93,7 @@
       <h2>Bibliothek</h2>
       <label for="root">Ordner der Sound-Bibliothek (inkl. Unterordner)</label>
       <div class="row"><input type="text" id="root" placeholder="z. B. D:\Sounds"><button class="fit" data-browse="root">Durchsuchen</button></div>
+      <label class="check"><input type="checkbox" id="useClap"> Inhaltsanalyse mit CLAP (Suche nach Klang; beim ersten Mal deutlich langsamer)</label>
       <div class="actions" style="margin-top:10px"><button id="scanBtn">Analysieren / aktualisieren</button></div>
       <div class="hint" id="libState">Noch nicht analysiert.</div>
       <div class="progress" id="scanBar"><div></div></div>
@@ -184,7 +185,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["root", "out", "folder", "request", "length", "seed", "noLlm", "loop", "aafMode", "aafLayout", "reaperLua", "remember"];
+const FIELDS = ["root", "useClap", "out", "folder", "request", "length", "seed", "noLlm", "loop", "aafMode", "aafLayout", "reaperLua", "remember"];
 let scenes = ["wenig los", "mittel", "voll"];
 let lastOut = null, results = [], planFiles = [];
 
@@ -259,7 +260,8 @@ function busy(on) {
 function showLibrary(info) {
   if (!info.indexed) { $("libState").textContent = "Noch nicht analysiert."; $("libTree").textContent = ""; return; }
   const when = info.scanned_at ? new Date(info.scanned_at * 1000).toLocaleString() : "";
-  $("libState").textContent = `${info.files} Dateien · ${info.hours} h Audio · analysiert ${when}`;
+  const clapText = info.clap_files ? ` · Inhaltsanalyse für ${info.clap_files}` : "";
+  $("libState").textContent = `${info.files} Dateien · ${info.hours} h Audio · analysiert ${when}${clapText}`;
   $("libTree").textContent = info.tree;
 }
 async function refreshLibrary() {
@@ -272,7 +274,7 @@ $("scanBtn").onclick = async () => {
   if (!$("root").value.trim()) { status("Bitte den Ordner der Bibliothek angeben.", "err"); return; }
   busy(true); status("Analysiere Bibliothek …", "busy");
   try {
-    const r = await runJob("/api/scan", { root: $("root").value.trim() }, $("scanBar"));
+    const r = await runJob("/api/scan", { root: $("root").value.trim(), clap: $("useClap").checked }, $("scanBar"));
     showLibrary(r);
     status(`Bibliothek bereit: ${r.files} Dateien (${r.analyzed} neu analysiert${r.unreadable ? `, ${r.unreadable} nicht lesbar` : ""}).`);
   } catch (e) { status(e.message, "err"); }
@@ -336,6 +338,10 @@ function showFiles() {
   for (const f of files) {
     const tr = document.createElement("tr");
     const td1 = document.createElement("td"); td1.textContent = f.rel; td1.title = f.description || "";
+    if (f.tags && f.tags.length) {
+      const t2 = document.createElement("div"); t2.className = "hint"; t2.style.marginTop = "0";
+      t2.textContent = `klingt nach: ${f.tags.join(", ")} · ${f.space}`; td1.append(t2);
+    }
     const td2 = document.createElement("td"); const b = document.createElement("span");
     b.className = "badge"; b.style.background = `var(--${f.role})`; b.textContent = ROLE_LABEL[f.role] || f.role; td2.append(b);
     const td3 = document.createElement("td"); td3.textContent = f.category;

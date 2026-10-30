@@ -94,7 +94,15 @@ def start_job(fn, data: dict) -> str:
 
 def job_scan(data: dict, log, progress) -> dict:
     index = get_index(data["root"])
+    if data.get("clap"):
+        import clap
+
+        err = clap.missing_dependencies()
+        if err:
+            raise RuntimeError(err)
     stats = index.scan(progress)
+    if data.get("clap"):
+        stats |= index.clap_scan(progress)
     return stats | library_info(index)
 
 
@@ -142,7 +150,8 @@ def plan_files(index: LibraryIndex, plan: dict) -> list[dict]:
         e = index.entries.get(f["id"])
         if e:
             out.append({"id": f["id"], "rel": e["rel"], "duration_s": e["duration_s"], "role": f["role"],
-                        "category": f["category"], "description": f.get("description", "")})
+                        "category": f["category"], "description": f.get("description", ""),
+                        "tags": e.get("tags", []), "space": e.get("space", "")})
     return out
 
 
@@ -150,6 +159,7 @@ def library_info(index: LibraryIndex) -> dict:
     if not index.entries:
         return {"indexed": False}
     return {"indexed": True, "files": len(index.entries), "scanned_at": index.scanned_at,
+            "clap_files": index.clap_count(),
             "hours": round(sum(e["duration_s"] for e in index.entries.values()) / 3600, 1),
             "tree": index.folder_tree("", depth=2, max_lines=200)}
 

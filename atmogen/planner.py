@@ -56,6 +56,46 @@ TOOLS = [
     },
 ]
 
+FILTER_PROPS = {
+    "folder": {"type": "string"},
+    "min_duration": {"type": "number"},
+    "max_duration": {"type": "number"},
+    "continuous": {"type": "string", "enum": ["any", "yes", "no"]},
+    "limit": {"type": "integer"},
+}
+
+
+def _tool(name: str, description: str, props: dict) -> dict:
+    return {
+        "name": name, "description": description, "strict": True, "eager_input_streaming": True,
+        "input_schema": {"type": "object", "additionalProperties": False, "required": list(props), "properties": props},
+    }
+
+
+CLAP_TOOLS = [
+    _tool("search_by_sound",
+          "Sucht nach Klang statt nach Namen (Inhaltsanalyse mit CLAP). description: kurze englische "
+          "Klangbeschreibung, z. B. 'muffled crowd chatter in a small room' oder 'distant glasses clinking'. "
+          "Filter wie bei search_library. Liefert die ähnlichsten Dateien mit Ähnlichkeitswert.",
+          {"description": {"type": "string"}, **FILTER_PROPS}),
+    _tool("similar_sounds",
+          "Findet Dateien, die ähnlich klingen wie die Datei mit dieser id, z. B. weitere Varianten eines "
+          "guten Events oder Layer aus demselben Raum. Filter wie bei search_library.",
+          {"id": {"type": "integer"}, **FILTER_PROPS}),
+    _tool("check_fit",
+          "Prüft, ob die gewählten Dateien klanglich zusammenpassen (gleicher Raum, ähnlicher Charakter) "
+          "und markiert Ausreißer. Vor dem endgültigen Plan mit allen gewählten ids aufrufen.",
+          {"ids": {"type": "array", "items": {"type": "integer"}}}),
+]
+
+CLAP_PROMPT = """
+
+Zusätzlich gibt es eine Inhaltsanalyse: Suchergebnisse zeigen "klingt nach" und "Raum", und du hast
+search_by_sound, similar_sounds und check_fit. Nutze search_by_sound für Klangeigenschaften, die nicht
+im Namen stehen (Raumgröße, Entfernung, Intensität, Stimmung), similar_sounds für mehr Varianten
+und rufe check_fit mit allen gewählten ids auf, bevor du den Plan abgibst. Ersetze markierte
+Ausreißer, wenn es passende Alternativen gibt. Die Analyse ist grob: Dateinamen bleiben wichtig."""
+
 LIBRARY_PROMPT = SYSTEM_PROMPT + """
 
 Du stellst die Atmo selbst aus einer großen Sound-Bibliothek zusammen. Vorgehen:
@@ -85,6 +125,11 @@ def plan_from_library(index: LibraryIndex, request: str, scenes: list[str], leng
         + index.folder_tree(folder, depth=3)
     )
     messages: list[dict] = [{"role": "user", "content": user}]
+    use_clap = index.clap_count() > 0
+    tools = TOOLS + CLAP_TOOLS if use_clap else TOOLS
+    system = LIBRARY_PROMPT + CLAP_PROMPT if use_clap else LIBRARY_PROMPT
+    if use_clap:
+        log(f"Inhaltsanalyse aktiv ({index.clap_count()} Dateien)")
 
     for turn in range(MAX_TURNS):
         with client.beta.messages.stream(
@@ -94,8 +139,8 @@ def plan_from_library(index: LibraryIndex, request: str, scenes: list[str], leng
             fallbacks="default",
             cache_control={"type": "ephemeral"},
             output_config={"effort": "medium", "format": {"type": "json_schema", "schema": PLAN_SCHEMA}},
-            system=LIBRARY_PROMPT,
-            tools=TOOLS,
+            system=system,
+            tools=tools,
             messages=messages,
         ) as stream:
             response = stream.get_final_message()
@@ -117,13 +162,22 @@ def plan_from_library(index: LibraryIndex, request: str, scenes: list[str], leng
                 check_args(call.name, args)
                 if call.name == "search_library":
                     log(f"Claude sucht: „{args['query']}“" + (f" in {args['folder']}" if args["folder"] else ""))
-                    folder_arg = args["folder"] if not folder else f"{folder.strip('/')}/{args['folder'].strip('/')}".strip("/")
-                    out = index.search(args["query"], folder_arg, args["min_duration"], args["max_duration"],
+                    out = index.search(args["query"], scoped(folder, args["folder"]), args["min_duration"], args["max_duration"],
                                        args["continuous"], args["limit"])
                 elif call.name == "list_folder":
                     log(f"Claude sieht sich den Ordner „{args['folder'] or '/'}“ an")
-                    sub = f"{folder.strip('/')}/{args['folder'].strip('/')}".strip("/") if folder else args["folder"]
-                    out = index.list_folder(sub)
+                    out = index.list_folder(scoped(folder, args["folder"]))
+                elif call.name == "search_by_sound":
+                    log(f"Claude sucht nach Klang: „{args['description']}“")
+                    out = index.search_sound(args["description"], scoped(folder, args["folder"]), args["min_duration"],
+                                             args["max_duration"], args["continuous"], args["limit"])
+                elif call.name == "similar_sounds":
+                    log(f"Claude sucht Ähnliches zu {index.entries.get(args['id'], {}).get('rel', args['id'])}")
+                    out = index.similar(args["id"], scoped(folder, args["folder"]), args["min_duration"],
+                                        args["max_duration"], args["continuous"], args["limit"])
+                elif call.name == "check_fit":
+                    log(f"Claude prüft, ob {len(args['ids'])} Sounds zusammenpassen")
+                    out = index.fit_check(args["ids"])
                 else:
                     raise ValueError(f"unbekanntes Werkzeug {call.name}")
                 results.append({"type": "tool_result", "tool_use_id": call.id, "content": out})
@@ -133,9 +187,14 @@ def plan_from_library(index: LibraryIndex, request: str, scenes: list[str], leng
     raise RuntimeError(f"Claude hat nach {MAX_TURNS} Runden keinen Plan geliefert.")
 
 
+def scoped(base: str, sub: str) -> str:
+    """Unterordner relativ zur gewählten Einschränkung."""
+    return "/".join(p for p in (base.strip("/"), sub.strip("/")) if p)
+
+
 def check_args(name: str, args) -> None:
     """Mit eager_input_streaming prüft die API die Eingaben nicht; fehlerhafte gehen an Claude zurück."""
-    tool = next((t for t in TOOLS if t["name"] == name), None)
+    tool = next((t for t in TOOLS + CLAP_TOOLS if t["name"] == name), None)
     if tool is None or not isinstance(args, dict):
         raise ValueError("ungültiger Werkzeugaufruf")
     props = tool["input_schema"]["properties"]
@@ -143,9 +202,11 @@ def check_args(name: str, args) -> None:
         if key not in args:
             raise ValueError(f"Parameter '{key}' fehlt")
         want = props[key]["type"]
-        ok = {"string": str, "number": (int, float), "integer": int}[want]
+        ok = {"string": str, "number": (int, float), "integer": int, "array": list}[want]
         if not isinstance(args[key], ok) or isinstance(args[key], bool):
             raise ValueError(f"Parameter '{key}' muss {want} sein")
+        if want == "array" and not all(isinstance(v, int) and not isinstance(v, bool) for v in args[key]):
+            raise ValueError(f"Parameter '{key}' muss eine Liste von ids sein")
         if "enum" in props[key] and args[key] not in props[key]["enum"]:
             raise ValueError(f"Parameter '{key}' muss einer von {props[key]['enum']} sein")
 

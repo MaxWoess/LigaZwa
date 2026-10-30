@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """atmogen (Kommandozeile). Für die Oberfläche: python ui.py
 
-  python atmogen.py scan  <bibliothek>
-      analysiert alle Audiodateien inkl. Unterordner (beim nächsten Mal nur Neues)
+  python atmogen.py scan  <bibliothek> [--clap]
+      analysiert alle Audiodateien inkl. Unterordner (beim nächsten Mal nur Neues);
+      --clap ergänzt die Inhaltsanalyse (Suche nach Klang, Passt-zusammen-Prüfung)
 
   python atmogen.py make  <bibliothek> "<welche Atmo>" [Optionen]
       Claude sucht passende Dateien und baut die Szenen, z. B.:
@@ -26,6 +27,7 @@ def main() -> None:
 
     sc = sub.add_parser("scan", help="Bibliothek analysieren")
     sc.add_argument("library", type=Path)
+    sc.add_argument("--clap", action="store_true", help="zusätzlich Inhaltsanalyse mit CLAP (langsamer, einmalig)")
 
     mk = sub.add_parser("make", help="Atmo-Szenen erzeugen")
     mk.add_argument("library", type=Path)
@@ -49,6 +51,9 @@ def main() -> None:
         stats = index.scan(lambda msg, done, total: print(f"\r{msg}", end="", flush=True))
         print(f"\n{stats['files']} Dateien ({stats['hours']} h) im Index, {stats['analyzed']} neu analysiert, "
               f"{stats['unreadable']} nicht lesbar")
+        if args.cmd == "scan" and args.clap:
+            stats = index.clap_scan(lambda msg, done, total: print(f"\r{msg}      ", end="", flush=True))
+            print(f"\nInhaltsanalyse: {stats['clap_files']} Dateien ({stats['clap_analyzed']} neu)")
         if args.cmd == "scan":
             return
 
