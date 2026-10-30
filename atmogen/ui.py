@@ -120,7 +120,10 @@ def job_plan(data: dict, log, progress) -> dict:
         from planner import plan_from_library
 
         log(f"Claude stellt die Atmo aus {len(index.in_folder(folder))} Dateien zusammen …")
-        plan = plan_from_library(index, data.get("request", ""), scenes, length, folder, key, log)
+        plan, cost = plan_from_library(index, data.get("request", ""), scenes, length, folder, key, log,
+                                       model=data.get("model", "claude-opus-5-5"), effort=data.get("effort", "low"),
+                                       budget_usd=float(data.get("budget", 0.30)))
+        return {"plan": plan, "files": plan_files(index, plan), "cost": cost}
     else:
         if not folder:
             raise RuntimeError("Ohne Claude bitte einen Unterordner angeben, der nur die passenden Sounds enthält.")

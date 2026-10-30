@@ -45,6 +45,10 @@ def main() -> None:
     mk.add_argument("--reaper-lua", action="store_true", help="zusätzlich Bauplan für BuildScene.lua")
     mk.add_argument("--plan", type=Path, help="vorhandenen plan.json verwenden statt neu zu planen")
     mk.add_argument("--no-llm", action="store_true", help="Heuristik nach Dateinamen statt Claude (braucht --folder)")
+    mk.add_argument("--model", default="claude-opus-5-5",
+                    choices=["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"])
+    mk.add_argument("--effort", default="low", choices=["low", "medium", "high"], help="Gründlichkeit beim Planen")
+    mk.add_argument("--budget", type=float, default=0.30, help="ungefähres Kostenlimit in US-Dollar pro Zusammenstellung")
     args = ap.parse_args()
 
     index = LibraryIndex(args.library)
@@ -68,7 +72,8 @@ def main() -> None:
     else:
         from planner import plan_from_library
 
-        plan = plan_from_library(index, args.request, scenes, args.length, args.folder)
+        plan, _ = plan_from_library(index, args.request, scenes, args.length, args.folder,
+                                    model=args.model, effort=args.effort, budget_usd=args.budget)
 
     for f in plan["files"]:
         if f["id"] in index.entries:
